@@ -1,0 +1,38 @@
+[package]
+name = "freqs"
+version = "0.3.2"
+edition = "2021"
+publish = false
+resolver = "2"
+autoexamples = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["gpui-gui"]
+gpui-gui = ["toybox/gpui-gui"]
+vst3 = ["toybox/gpui-vst3", "gpui-gui"]
+screenshot-test = ["dep:image", "gpui-gui"]
+
+[dependencies]
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "c3cdf63d4d687bf639e3ec6050c388f777bc189b", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+raw-window-handle = "0.5.2"
+
+[[bin]]
+name = "freqs_gpui_screenshot"
+path = "examples/freqs_gpui_screenshot.rs"
+required-features = ["screenshot-test"]
+test = false
+bench = false
+
+[lints.rust]
+warnings = "deny"
+
+[lints.rustdoc]
+missing_crate_level_docs = "deny"
