@@ -180,7 +180,7 @@ codesign -vvvv -R=notarized --check-notarization "${audited}" >/dev/null
 cp CHANGELOG.md "${staged}/CHANGELOG.md"
 cat > "${staged}/INSTALL.txt" <<'EOF'
 Install the Freqs VST3 bundle in ~/Library/Audio/Plug-Ins/VST3/ and rescan plug-ins in your DAW.
-Freqs is an Apple Silicon macOS VST3 instrument and MTS-ESP master.
+Freqs is an Apple Silicon macOS MTS-ESP tuning system with a built-in audition tone.
 EOF
 python3 - "${staged}" "${version}" "${source_sha}" "${team_id}" "${notary_id}" <<'PY'
 import hashlib, json, pathlib, sys

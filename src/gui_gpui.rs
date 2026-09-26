@@ -748,7 +748,7 @@ impl Render for Editor {
                             .mt(px(10.0))
                             .text_size(px(11.0))
                             .text_color(rgba(0xa4a6a4ff))
-                            .child("MICROTONAL EXPLORER"),
+                            .child("MTS-ESP TUNING SYSTEM"),
                     )
                     .child(
                         div()
@@ -1141,7 +1141,7 @@ impl Render for Editor {
                                     .flex()
                                     .items_center()
                                     .gap(px(12.0))
-                                    .child(section_title("SYNTH"))
+                                    .child(section_title("AUDITION"))
                                     .child(
                                         control_button("△", settings.waveform.index() == 0)
                                             .id("triangle-wave")

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- Present Freqs as an MTS-ESP tuning system throughout the plug-in and documentation; describe its built-in sound as a tuning audition aid.
+- Remove the synth subcategory from VST3 host metadata while keeping MIDI input and stereo audition output.
+
 ## 0.3.2
 
 - Add subtle, flowing contour lines to the scale landscape, shaped by the positions of the current variations.

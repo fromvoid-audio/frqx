@@ -1,6 +1,6 @@
 //! Freqs AudioDev plug-in.
 //!
-//! An MTS-ESP master with an editable microtonal scale and three GPUI views.
+//! An MTS-ESP tuning system for designing and auditioning microtonal scales.
 
 #![deny(missing_docs, warnings)]
 

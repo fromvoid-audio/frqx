@@ -1,6 +1,6 @@
 # Freqs
 
-Freqs is a macOS VST3 synth instrument, scale designer, and MTS-ESP master built with Toybox and GPUI. MIDI notes play its 16-voice audition synth through a stereo output. It also publishes a 128-key tuning table to MTS-ESP clients.
+Freqs is an MTS-ESP-based tuning system for designing, auditioning, and saving microtonal scales. It runs as an MTS-ESP master and sends a 128-key tuning table to compatible instruments. Its built-in sound is a simple reference tone for hearing the tuning as you edit; the plug-in accepts MIDI and produces stereo audio so you can audition scales directly in your DAW.
 
 ## Editor
 
@@ -8,7 +8,7 @@ Freqs is a macOS VST3 synth instrument, scale designer, and MTS-ESP master built
 - **Note Lattice** shows harmonic simplicity for every note pair. Drag a dot vertically to increase or decrease the selected pair's fit. Every dot updates during the drag.
 - **Pitch Line** lets you drag individual degrees silently. Held MIDI notes highlight the corresponding scale degrees, with a brief mark after release. All main views stay visible together. Equal, Just major, and Snap selected note live under the settings icon.
 - **Tuning** groups root frequency and repeat size. Hold Shift while dragging the period slider, or enable Snap Ratios, to lock to clean ratios. Root degree and root MIDI key are separate controls. **Reach** sits with the landscape it changes.
-- **Audition Synth** offers triangle, square, and saw tones, plus output level, attack, and release controls. Play MIDI to hear the scale.
+- **Audition Tone** offers triangle, square, and saw tones, plus output level, attack, and release controls for checking the current tuning with MIDI.
 - **Notes / Repeat** sets 3–48 notes. Use ±1 or the 12, 24, 36, and 48 shortcuts. Each adjacent MIDI key plays the next scale note, wrapping to the next period after the last note.
 - The editor reports scale cohesion, root affinity, spectral interaction, and a strong three-note root shape. These are visual estimates, not musical verdicts.
 - **Save** and **Load** use eight local scale slots under `~/Library/Application Support/PORTALSURFER/Freqs/scales/`. The VST3 also stores its scale and synth settings in the host project state. Earlier scale files and host states remain readable.
@@ -17,7 +17,7 @@ Freqs is a macOS VST3 synth instrument, scale designer, and MTS-ESP master built
 
 1. Disable any other MTS-ESP master. Only one master can own the connection.
 2. Place the built `.vst3` bundle in `~/Library/Audio/Plug-Ins/VST3/`, rescan plug-ins, and load Freqs as an instrument in the DAW.
-3. Play MIDI into Freqs and verify its stereo synth output, release tail, and keyboard mapping at 12, 24, and 48 notes. Tune a degree while holding a note to hear the pitch change.
+3. Play MIDI into Freqs and verify its reference tone, release tail, and keyboard mapping at 12, 24, and 48 notes. Tune a degree while holding a note to hear the pitch change.
 4. Optionally load an MTS-ESP compatible instrument and verify Freqs also tunes it. The header shows connection state and client count.
 5. Save and reload a DAW project, then test the eight local library slots separately.
 

@@ -1,4 +1,4 @@
-//! MTS-ESP master and polyphonic audition instrument VST3 processor.
+//! MTS-ESP tuning master with a built-in audition tone.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -416,7 +416,7 @@ impl IPluginFactory2Trait for Factory {
             0 => (
                 Processor::CID,
                 CATEGORY_AUDIO_MODULE_CLASS,
-                "Instrument|Synth",
+                "Instrument",
                 "freqs",
             ),
             1 => (
@@ -459,7 +459,7 @@ mod tests {
             .map(|byte| *byte as u8)
             .take_while(|byte| *byte != 0)
             .collect::<Vec<_>>();
-        assert_eq!(subcategories, b"Instrument|Synth");
+        assert_eq!(subcategories, b"Instrument");
 
         let processor = Processor::new();
         assert_eq!(
