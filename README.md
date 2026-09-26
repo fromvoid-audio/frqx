@@ -2,6 +2,8 @@
 
 Freqs is an MTS-ESP-based tuning system for designing, auditioning, and saving microtonal scales. It runs as an MTS-ESP master and sends a 128-key tuning table to compatible instruments. Its built-in sound is a simple reference tone for hearing the tuning as you edit; the plug-in accepts MIDI and produces stereo audio so you can audition scales directly in your DAW.
 
+Freqs replaces an ODDSound master plug-in as the tuning controller. MTS-ESP still needs ODDSound's shared `libMTS.dylib` at `/Library/Application Support/MTS-ESP/`, because client instruments load that same library. The complete release ZIP includes ODDSound's signed library installer; users do not need to download or run a separate master plug-in. If the library is already installed, they can skip that installer.
+
 ## Editor
 
 - **Scale Landscape** shows frozen scale variations positioned by whole-scale harmonic cohesion and root affinity. Click a point to select a variation. **New Variations** creates a new field from the current scale. The Reach slider updates the field while dragging.
@@ -39,7 +41,7 @@ bash scripts/dist.sh --format vst3
 
 ## Release package
 
-`scripts/release.sh` creates a separate distributable macOS VST3 ZIP. It requires a clean committed source tree, the VST3 SDK, an installed Developer ID Application certificate, and Apple notarization credentials. It signs with the hardened runtime and timestamp, waits for notarization, staples the ticket, then re-extracts and audits the ZIP. A failed gate produces no release package.
+`scripts/release.sh` creates a separate distributable macOS VST3 ZIP and a complete ZIP containing the VST3 plus ODDSound's signed MTS-ESP library installer. It requires a clean committed source tree, the VST3 SDK, an installed Developer ID Application certificate, and Apple notarization credentials. It signs Freqs with the hardened runtime and timestamp, waits for notarization, staples the ticket, then re-extracts and audits the ZIPs. It downloads the library installer from a pinned upstream revision and verifies its checksum and signature. A failed gate produces no release package.
 
 ```fish
 set -gx VST3_SDK_DIR /path/to/vst3sdk
@@ -48,4 +50,4 @@ bash scripts/release.sh --check
 bash scripts/release.sh --package-only
 ```
 
-`freqs-notary` must be a profile already saved in your macOS Keychain. To create one with an Apple ID, run `xcrun notarytool store-credentials freqs-notary --apple-id your-apple-id@example.com --team-id DKTKQ8U5T8`; it prompts securely for an app-specific password. Alternatively, supply `APPLE_NOTARY_KEY_PATH`, `APPLE_NOTARY_KEY_ID`, and `APPLE_NOTARY_ISSUER_ID` instead of a keychain profile. `APPLE_CODESIGN_IDENTITY` can select a specific installed Developer ID Application certificate. Credentials stay outside this repository. Releases are written under `dist/releases/freqs-v<version>-<source-sha>/` with a ZIP, install note, changelog, and hash/signing evidence. This script does not upload or publish; host testing and a separate publication decision follow package verification.
+`freqs-notary` must be a profile already saved in your macOS Keychain. To create one with an Apple ID, run `xcrun notarytool store-credentials freqs-notary --apple-id your-apple-id@example.com --team-id DKTKQ8U5T8`; it prompts securely for an app-specific password. Alternatively, supply `APPLE_NOTARY_KEY_PATH`, `APPLE_NOTARY_KEY_ID`, and `APPLE_NOTARY_ISSUER_ID` instead of a keychain profile. `APPLE_CODESIGN_IDENTITY` can select a specific installed Developer ID Application certificate. Credentials stay outside this repository. Releases are written under `dist/releases/freqs-v<version>-<source-sha>/` with ZIPs, the signed ODDSound installer, install note, changelog, and hash/signing evidence. This script does not upload or publish; host testing and a separate publication decision follow package verification.

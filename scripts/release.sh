@@ -32,7 +32,7 @@ fi
 
 problems=()
 [[ "$(uname -s)" == Darwin ]] || problems+=("macOS is required")
-for tool in cargo codesign security xcrun ditto lipo python3; do
+for tool in cargo codesign security xcrun ditto lipo python3 curl shasum pkgutil; do
   command -v "${tool}" >/dev/null || problems+=("missing tool: ${tool}")
 done
 [[ -d "${VST3_SDK_DIR:-}/pluginterfaces" ]] || problems+=("VST3_SDK_DIR must point to a VST3 SDK checkout")
@@ -92,6 +92,19 @@ release_dir="${repo_root}/dist/releases/${build_id}"
 mkdir -p "${repo_root}/target" "${repo_root}/dist/releases"
 tmp_root="$(mktemp -d "${repo_root}/target/freqs-release.XXXXXX")"
 trap 'rm -rf -- "${tmp_root}"' EXIT
+
+libmts_pkg="${tmp_root}/ODDSound-libMTS-1.03.pkg"
+# MTS-ESP clients load this shared library from a fixed system path. Ship the
+# upstream signed installer alongside Freqs so one download contains both.
+curl --fail --location --silent --show-error \
+  "https://raw.githubusercontent.com/ODDSound/MTS-ESP/f214739b8832e7f297cb9970d0c0efbf783f1462/libMTS/Mac/x86_64_ARM/libMTSMac_v1.03.pkg" \
+  --output "${libmts_pkg}"
+echo "5caff5a1f194cddfe5a065cd1b2335fae76ea9d8ff21021071f75b4e7ef0fb85  ${libmts_pkg}" | shasum -a 256 -c - >/dev/null
+pkg_signature="$(pkgutil --check-signature "${libmts_pkg}")"
+[[ "${pkg_signature}" == *"Developer ID Installer: David Gamble (ZTMS6M322L)"* ]] || {
+  echo "ODDSound libMTS installer signature is missing" >&2
+  exit 1
+}
 
 bash scripts/ci.sh --vst3
 VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${tmp_root}/cargo-target" \
@@ -165,6 +178,7 @@ codesign -vvvv -R=notarized --check-notarization "${bundle}" >/dev/null
 
 staged="${tmp_root}/${build_id}"
 mkdir -p "${staged}"
+cp "${libmts_pkg}" "${staged}/ODDSound-libMTS-1.03.pkg"
 archive="${staged}/freqs-v${version}-macos.vst3.zip"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${bundle}" "${archive}"
 /usr/bin/ditto -x -k "${archive}" "${tmp_root}/audit"
@@ -179,8 +193,17 @@ xcrun stapler validate "${audited}"
 codesign -vvvv -R=notarized --check-notarization "${audited}" >/dev/null
 cp CHANGELOG.md "${staged}/CHANGELOG.md"
 cat > "${staged}/INSTALL.txt" <<'EOF'
-Install the Freqs VST3 bundle in ~/Library/Audio/Plug-Ins/VST3/ and rescan plug-ins in your DAW.
-Freqs is an Apple Silicon macOS MTS-ESP tuning system with a built-in audition tone.
+Freqs is an Apple Silicon macOS MTS-ESP tuning master. You do not need the ODDSound Master plug-in.
+
+1. If the MTS-ESP system library is not already installed, run the included
+   ODDSound-libMTS-1.03.pkg. macOS will ask for an administrator password.
+   This is ODDSound's signed installer for the shared library used by MTS-ESP
+   masters and clients. Do not remove an existing master plug-in until you have
+   checked that your client instruments connect to Freqs.
+2. Install the Freqs VST3 bundle in ~/Library/Audio/Plug-Ins/VST3/ and rescan
+   plug-ins in your DAW.
+3. Disable any other MTS-ESP master, load Freqs and a compatible client
+   instrument, then check Freqs' client count and audition the tuning.
 EOF
 python3 - "${staged}" "${version}" "${source_sha}" "${team_id}" "${notary_id}" <<'PY'
 import hashlib, json, pathlib, sys
@@ -193,8 +216,31 @@ manifest = {
     "signing": "Developer ID Application", "team_id": team_id,
     "notarized": True, "stapled": True, "notary_id": notary_id,
     "archive": archive.name, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+    "mts_library_installer": "ODDSound-libMTS-1.03.pkg",
+    "mts_library_installer_sha256": hashlib.sha256((root / "ODDSound-libMTS-1.03.pkg").read_bytes()).hexdigest(),
 }
 (root / "release-info.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+complete_archive="${staged}/freqs-v${version}-macos-complete.zip"
+mkdir -p "${tmp_root}/complete"
+cp -R "${bundle}" "${tmp_root}/complete/freqs.vst3"
+cp "${libmts_pkg}" "${staged}/INSTALL.txt" "${staged}/CHANGELOG.md" "${tmp_root}/complete/"
+/usr/bin/ditto -c -k --sequesterRsrc "${tmp_root}/complete" "${complete_archive}"
+/usr/bin/ditto -x -k "${complete_archive}" "${tmp_root}/complete-audit"
+[[ -f "${tmp_root}/complete-audit/ODDSound-libMTS-1.03.pkg" && -d "${tmp_root}/complete-audit/freqs.vst3" ]] || {
+  echo "complete ZIP is missing Freqs or the MTS-ESP library installer" >&2
+  exit 1
+}
+codesign --verify --deep --strict "${tmp_root}/complete-audit/freqs.vst3"
+xcrun stapler validate "${tmp_root}/complete-audit/freqs.vst3"
+echo "5caff5a1f194cddfe5a065cd1b2335fae76ea9d8ff21021071f75b4e7ef0fb85  ${tmp_root}/complete-audit/ODDSound-libMTS-1.03.pkg" | shasum -a 256 -c - >/dev/null
+python3 - "${staged}/release-info.json" "${complete_archive}" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path, archive = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest["complete_archive"] = archive.name
+manifest["complete_archive_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 mv "${staged}" "${release_dir}"
 echo "verified distributable release: ${release_dir}"
