@@ -6,13 +6,12 @@ Freqs replaces an ODDSound master plug-in as the tuning controller. MTS-ESP stil
 
 ## Editor
 
-- **Scale Landscape** shows frozen scale variations positioned by whole-scale harmonic cohesion and root affinity. Click a point to select a variation. **New Variations** creates a new field from the current scale. The Reach slider updates the field while dragging.
-- **Note Lattice** shows harmonic simplicity for every note pair. Drag a dot vertically to increase or decrease the selected pair's fit. Every dot updates during the drag.
-- **Pitch Line** lets you drag individual degrees silently. Held MIDI notes highlight the corresponding scale degrees, with a brief mark after release. All main views stay visible together. Equal, Just major, and Snap selected note live under the settings icon.
-- **Tuning** groups root frequency and repeat size. Hold Shift while dragging the period slider, or enable Snap Ratios, to lock to clean ratios. Root degree and root MIDI key are separate controls. **Reach** sits with the landscape it changes.
-- **Audition Tone** offers triangle, square, and saw tones, plus output level, attack, and release controls for checking the current tuning with MIDI.
-- **Notes / Repeat** sets 3–48 notes. Use ±1 or the 12, 24, 36, and 48 shortcuts. Each adjacent MIDI key plays the next scale note, wrapping to the next period after the last note.
-- The editor reports scale cohesion, root affinity, spectral interaction, and a strong three-note root shape. These are visual estimates, not musical verdicts.
+- **Nodes** lists each degree's absolute pitch in hertz and its position in cents. Press Enter to apply a field edit; Escape or leaving the field cancels the draft. Up/Down adjusts the value, with Shift for smaller steps. Pitch remains relative to the selected root, and edits stay ordered between neighboring nodes. Scroll the list for larger scales. Right-click a node to insert a degree after it or remove it. The root node cannot be removed, and a scale always keeps at least three nodes.
+- **Pitch Space** shows scale variations positioned by whole-scale cohesion and root affinity. Click a point to apply a variation. The dice button creates another field from the current scale. The Reach bar updates the field while dragging.
+- **Pitch Line** lets you drag individual degrees silently. Note numbers appear above the line. Cent values appear below it for smaller scales and the selected degree in larger scales. Held MIDI notes highlight their scale degrees, with a brief mark after release.
+- **Reference** groups root degree, root frequency, root MIDI key, repeat size, and ratio snapping. Hold Shift while dragging the repeat bar, or enable Snap Ratios, to lock it to clean ratios. Equal divisions, Just major, and Snap selected note are under settings.
+- **Slots & structure** sets 3–48 notes with the count buttons and provides eight local save/load slots. Each adjacent MIDI key plays the next scale note, wrapping to the next period after the last note.
+- **Audition** offers triangle, square, and saw tones, plus output level, attack, and release controls for checking the current tuning with MIDI.
 - **Save** and **Load** use eight local scale slots under `~/Library/Application Support/PORTALSURFER/Freqs/scales/`. The VST3 also stores its scale and synth settings in the host project state. Earlier scale files and host states remain readable.
 
 ## Host test

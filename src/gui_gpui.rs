@@ -1,4 +1,4 @@
-//! Native GPUI editor for pitch, pair fit, and scale-wide exploration.
+//! Native GPUI editor for node tuning, pitch space, and audition.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,16 +10,21 @@ use toybox::gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Render, Window,
 };
 
-use crate::analysis::{pair_fit, Analysis};
+use toybox::gpui_gui::{
+    NumericInput, NumericInputCanceled, NumericInputConfig, NumericInputRange, NumericInputStepped,
+    NumericInputSubmitted,
+};
+
+use crate::analysis::pair_fit;
 use crate::library;
 use crate::scale::{nearest_lattice, Scale, MAX_DEGREES};
 use crate::shared::{MasterStatus, Shared};
 use crate::synth::{ATTACK_PARAM, LEVEL_PARAM, RELEASE_PARAM, WAVEFORM_PARAM};
 
 /// Fixed editor width.
-pub const WIDTH: u32 = 1536;
+pub const WIDTH: u32 = 1600;
 /// Fixed editor height.
-pub const HEIGHT: u32 = 1024;
+pub const HEIGHT: u32 = 1000;
 
 type GraphBounds = Rc<RefCell<Option<Bounds<Pixels>>>>;
 
@@ -27,10 +32,15 @@ struct Editor {
     shared: Arc<Shared>,
     pair: (usize, usize),
     dragging: Option<usize>,
-    pair_drag: Option<(usize, f32, Scale)>,
     pitch_bounds: GraphBounds,
-    matrix_bounds: GraphBounds,
     palette_bounds: GraphBounds,
+    node_inputs: Vec<(gpui::Entity<NumericInput>, gpui::Entity<NumericInput>)>,
+    node_input_subscriptions: Vec<gpui::Subscription>,
+    node_scroll: gpui::ScrollHandle,
+    node_input_revision: u64,
+    node_input_epoch: u64,
+    node_context_menu: Option<(usize, f32, f32)>,
+    selected_node: usize,
     root_bounds: GraphBounds,
     period_bounds: GraphBounds,
     max_move_bounds: GraphBounds,
@@ -47,20 +57,24 @@ struct Editor {
     snap_period: bool,
     show_settings: bool,
     show_help: bool,
-    analysis_cache: Option<(Scale, Analysis)>,
 }
 
 impl Editor {
     fn new(shared: Arc<Shared>) -> Self {
-        let initial = shared.snapshot();
+        let (initial, initial_revision) = shared.snapshot_with_revision();
         Self {
             shared,
             pair: (0, 4),
             dragging: None,
-            pair_drag: None,
             pitch_bounds: Rc::new(RefCell::new(None)),
-            matrix_bounds: Rc::new(RefCell::new(None)),
             palette_bounds: Rc::new(RefCell::new(None)),
+            node_inputs: Vec::new(),
+            node_input_subscriptions: Vec::new(),
+            node_scroll: gpui::ScrollHandle::new(),
+            node_input_revision: initial_revision,
+            node_input_epoch: 0,
+            node_context_menu: None,
+            selected_node: 4,
             root_bounds: Rc::new(RefCell::new(None)),
             period_bounds: Rc::new(RefCell::new(None)),
             max_move_bounds: Rc::new(RefCell::new(None)),
@@ -77,7 +91,6 @@ impl Editor {
             snap_period: false,
             show_settings: false,
             show_help: false,
-            analysis_cache: None,
         }
     }
 
@@ -97,12 +110,16 @@ impl Editor {
     }
 
     fn equal(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.shared.edit(|scale| scale.set_equal(scale.count));
+        let (_, revision) = self
+            .shared
+            .edit_with_revision(|scale| scale.set_equal(scale.count));
+        self.node_input_revision = revision;
         cx.notify();
     }
 
     fn just(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.shared.edit(Scale::set_just_major);
+        let (_, revision) = self.shared.edit_with_revision(Scale::set_just_major);
+        self.node_input_revision = revision;
         self.pair = (0, 4);
         cx.notify();
     }
@@ -128,9 +145,339 @@ impl Editor {
     }
 
     fn set_note_count(&mut self, count: usize, cx: &mut Context<Self>) {
-        self.shared.edit(|scale| scale.set_count(count));
-        self.variations = variations(self.shared.snapshot(), self.max_move);
+        let (scale, revision) = self
+            .shared
+            .edit_with_revision(|scale| scale.set_count(count));
+        self.node_input_revision = revision;
+        self.node_context_menu = None;
+        self.variations = variations(scale, self.max_move);
         cx.notify();
+    }
+
+    fn open_node_context(
+        &mut self,
+        index: usize,
+        event: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Right {
+            return;
+        }
+        self.selected_node = index.min(self.shared.snapshot().count.saturating_sub(1));
+        self.pair = (self.shared.snapshot().root_degree, self.selected_node);
+        self.node_context_menu = Some((
+            self.selected_node,
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+        ));
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn select_node(&mut self, index: usize, cx: &mut Context<Self>) {
+        let scale = self.shared.snapshot();
+        self.selected_node = index.min(scale.count.saturating_sub(1));
+        self.pair = (scale.root_degree, self.selected_node);
+        self.node_context_menu = None;
+        cx.notify();
+    }
+
+    fn add_node_after(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let index = self
+            .node_context_menu
+            .map(|(index, _, _)| index)
+            .unwrap_or(self.selected_node);
+        let mut inserted = None;
+        let result = self
+            .shared
+            .edit_if_revision(self.node_input_revision, |scale| {
+                inserted = scale.insert_degree_after(index)
+            });
+        if let (Some(inserted), Some((scale, revision))) = (inserted, result) {
+            self.node_input_revision = revision;
+            self.selected_node = inserted;
+            self.variations = variations(scale, self.max_move);
+            self.message = format!("Added node {}", inserted + 1);
+        } else if result.is_some() {
+            self.message = "No room to add a node in this interval".into();
+        } else {
+            self.message = "Scale changed; choose a node again".into();
+        }
+        self.node_context_menu = None;
+        cx.notify();
+    }
+
+    fn remove_selected_node(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = self
+            .node_context_menu
+            .map(|(index, _, _)| index)
+            .unwrap_or(self.selected_node);
+        let mut removed = false;
+        let result = self
+            .shared
+            .edit_if_revision(self.node_input_revision, |scale| {
+                removed = scale.remove_degree(index)
+            });
+        if removed {
+            if let Some((scale, revision)) = result {
+                self.node_input_revision = revision;
+                self.selected_node = index.saturating_sub(1);
+                self.pair = (scale.root_degree, self.selected_node);
+                self.variations = variations(scale, self.max_move);
+                self.message = format!("Removed node {}", index + 1);
+            } else {
+                self.message = "Scale changed; choose a node again".into();
+            }
+        } else if result.is_some() {
+            self.message = "Keep at least three nodes and retain the root".into();
+        } else {
+            self.message = "Scale changed; choose a node again".into();
+        }
+        self.node_context_menu = None;
+        cx.notify();
+    }
+
+    fn apply_node_frequency(
+        &mut self,
+        index: usize,
+        hz: f64,
+        expected_revision: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.shared.edit_if_revision(expected_revision, |scale| {
+            scale.set_degree_frequency(index, hz);
+        });
+        let Some((scale, revision)) = result else {
+            cx.notify();
+            return;
+        };
+        self.node_input_revision = revision;
+        self.pair = (scale.root_degree, index.min(scale.count - 1));
+        self.selected_node = index;
+        self.variations = variations(scale, self.max_move);
+        self.sync_node_input(index, scale, cx);
+        cx.notify();
+    }
+
+    fn apply_node_cents(
+        &mut self,
+        index: usize,
+        cents: f32,
+        expected_revision: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.shared.edit_if_revision(expected_revision, |scale| {
+            scale.move_degree(index, cents);
+        });
+        let Some((scale, revision)) = result else {
+            cx.notify();
+            return;
+        };
+        self.node_input_revision = revision;
+        self.pair = (scale.root_degree, index.min(scale.count - 1));
+        self.selected_node = index;
+        self.variations = variations(scale, self.max_move);
+        self.sync_node_input(index, scale, cx);
+        cx.notify();
+    }
+
+    fn sync_node_input(&self, index: usize, scale: Scale, cx: &mut Context<Self>) {
+        if let Some((hz_input, cents_input)) = self.node_inputs.get(index) {
+            let hz = scale.degree_frequency(index).unwrap_or(scale.root_hz) as f32;
+            let cents = scale.cents[index];
+            hz_input.update(cx, |input, cx| {
+                input.set_value(hz, cx);
+                input.set_text(format!("{hz:.2}"), cx);
+            });
+            cents_input.update(cx, |input, cx| {
+                input.set_value(cents, cx);
+                input.set_text(format!("{cents:.1}"), cx);
+            });
+        }
+    }
+
+    fn ensure_node_inputs(&mut self, scale: Scale, revision: u64, cx: &mut Context<Self>) {
+        if self.node_input_revision != revision {
+            self.node_input_revision = revision;
+            self.node_input_epoch = self.node_input_epoch.wrapping_add(1);
+            self.node_inputs.clear();
+            self.node_input_subscriptions.clear();
+            self.node_context_menu = None;
+            self.selected_node = self.selected_node.min(scale.count.saturating_sub(1));
+        }
+        if self.node_inputs.len() != scale.count {
+            self.node_input_epoch = self.node_input_epoch.wrapping_add(1);
+            self.node_inputs.clear();
+            self.node_input_subscriptions.clear();
+            let epoch = self.node_input_epoch;
+            for index in 0..scale.count {
+                let hz = scale.degree_frequency(index).unwrap_or(scale.root_hz) as f32;
+                let cents = scale.cents[index];
+                let hz_input = cx.new(|cx| {
+                    NumericInput::new(
+                        NumericInputConfig::new(
+                            hz,
+                            NumericInputRange::new(
+                                if index == scale.root_degree {
+                                    10.0
+                                } else {
+                                    2.5
+                                },
+                                if index == scale.root_degree {
+                                    20_000.0
+                                } else {
+                                    80_000.0
+                                },
+                            ),
+                            1.0,
+                            0.01,
+                            |value| format!("{value:.2}"),
+                        ),
+                        cx,
+                    )
+                });
+                let cents_input = cx.new(|cx| {
+                    NumericInput::new(
+                        NumericInputConfig::new(
+                            cents,
+                            NumericInputRange::new(0.0, 2400.0),
+                            1.0,
+                            0.1,
+                            |value| format!("{value:.1}"),
+                        ),
+                        cx,
+                    )
+                });
+
+                let subscription = cx.subscribe(
+                    &hz_input,
+                    move |this: &mut Self, _, event: &NumericInputSubmitted, cx| {
+                        if this.node_input_epoch == epoch
+                            && this.node_input_revision == this.shared.revision()
+                            && index < this.shared.snapshot().count
+                        {
+                            if let Ok(value) = event.text.parse::<f64>() {
+                                let expected = this.node_input_revision;
+                                this.apply_node_frequency(index, value, expected, cx);
+                            } else {
+                                let (scale, _) = this.shared.snapshot_with_revision();
+                                this.sync_node_input(index, scale, cx);
+                            }
+                        }
+                    },
+                );
+                self.node_input_subscriptions.push(subscription);
+                let subscription = cx.subscribe(
+                    &hz_input,
+                    move |this: &mut Self, _, _: &NumericInputCanceled, cx| {
+                        if this.node_input_epoch == epoch {
+                            let (scale, revision) = this.shared.snapshot_with_revision();
+                            if revision == this.node_input_revision {
+                                this.sync_node_input(index, scale, cx);
+                            } else {
+                                cx.notify();
+                            }
+                        }
+                    },
+                );
+                self.node_input_subscriptions.push(subscription);
+                let subscription = cx.subscribe(
+                    &hz_input,
+                    move |this: &mut Self, _, event: &NumericInputStepped, cx| {
+                        if this.node_input_epoch == epoch
+                            && this.node_input_revision == this.shared.revision()
+                            && index < this.shared.snapshot().count
+                        {
+                            let (scale, revision) = this.shared.snapshot_with_revision();
+                            if revision == this.node_input_revision {
+                                if let Some(value) = scale.degree_frequency(index) {
+                                    this.apply_node_frequency(
+                                        index,
+                                        value + f64::from(event.delta),
+                                        revision,
+                                        cx,
+                                    );
+                                }
+                            }
+                        }
+                    },
+                );
+                self.node_input_subscriptions.push(subscription);
+                let subscription = cx.subscribe(
+                    &cents_input,
+                    move |this: &mut Self, _, event: &NumericInputSubmitted, cx| {
+                        if this.node_input_epoch == epoch
+                            && this.node_input_revision == this.shared.revision()
+                            && index < this.shared.snapshot().count
+                        {
+                            if let Ok(value) = event.text.parse::<f32>() {
+                                let expected = this.node_input_revision;
+                                this.apply_node_cents(index, value, expected, cx);
+                            } else {
+                                let (scale, _) = this.shared.snapshot_with_revision();
+                                this.sync_node_input(index, scale, cx);
+                            }
+                        }
+                    },
+                );
+                self.node_input_subscriptions.push(subscription);
+                let subscription = cx.subscribe(
+                    &cents_input,
+                    move |this: &mut Self, _, _: &NumericInputCanceled, cx| {
+                        if this.node_input_epoch == epoch {
+                            let (scale, revision) = this.shared.snapshot_with_revision();
+                            if revision == this.node_input_revision {
+                                this.sync_node_input(index, scale, cx);
+                            } else {
+                                cx.notify();
+                            }
+                        }
+                    },
+                );
+                self.node_input_subscriptions.push(subscription);
+                let subscription = cx.subscribe(
+                    &cents_input,
+                    move |this: &mut Self, _, event: &NumericInputStepped, cx| {
+                        if this.node_input_epoch == epoch
+                            && this.node_input_revision == this.shared.revision()
+                            && index < this.shared.snapshot().count
+                        {
+                            let (scale, revision) = this.shared.snapshot_with_revision();
+                            if revision == this.node_input_revision {
+                                this.apply_node_cents(
+                                    index,
+                                    scale.cents[index] + event.delta,
+                                    revision,
+                                    cx,
+                                );
+                            }
+                        }
+                    },
+                );
+                self.node_input_subscriptions.push(subscription);
+                self.node_inputs.push((hz_input, cents_input));
+            }
+        }
+        for (index, (hz_input, cents_input)) in self.node_inputs.iter().enumerate() {
+            let hz = scale.degree_frequency(index).unwrap_or(scale.root_hz) as f32;
+            let cents = scale.cents[index];
+            hz_input.update(cx, |input, cx| {
+                if !input.is_editing() && (input.value() - hz).abs() > 0.001 {
+                    input.set_value(hz, cx);
+                }
+            });
+            cents_input.update(cx, |input, cx| {
+                if !input.is_editing() && (input.value() - cents).abs() > 0.001 {
+                    input.set_value(cents, cx);
+                }
+            });
+        }
     }
 
     fn triangle(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -149,26 +496,36 @@ impl Editor {
     }
 
     fn root_previous(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.shared
-            .edit(|scale| scale.root_degree = (scale.root_degree + scale.count - 1) % scale.count);
+        let (_, revision) = self.shared.edit_with_revision(|scale| {
+            scale.root_degree = (scale.root_degree + scale.count - 1) % scale.count
+        });
+        let _ = revision;
+        self.node_input_revision = 0;
         cx.notify();
     }
 
     fn root_next(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.shared
-            .edit(|scale| scale.root_degree = (scale.root_degree + 1) % scale.count);
+        let (_, revision) = self
+            .shared
+            .edit_with_revision(|scale| scale.root_degree = (scale.root_degree + 1) % scale.count);
+        let _ = revision;
+        self.node_input_revision = 0;
         cx.notify();
     }
 
     fn key_previous(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.shared
-            .edit(|scale| scale.root_key = scale.root_key.saturating_sub(1));
+        let (_, revision) = self
+            .shared
+            .edit_with_revision(|scale| scale.root_key = scale.root_key.saturating_sub(1));
+        self.node_input_revision = revision;
         cx.notify();
     }
 
     fn key_next(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.shared
-            .edit(|scale| scale.root_key = scale.root_key.saturating_add(1).min(127));
+        let (_, revision) = self
+            .shared
+            .edit_with_revision(|scale| scale.root_key = scale.root_key.saturating_add(1).min(127));
+        self.node_input_revision = revision;
         cx.notify();
     }
 
@@ -197,6 +554,10 @@ impl Editor {
     fn load(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.message = match library::load_slot(self.slot) {
             Ok(scale) if self.shared.replace(scale) => {
+                self.node_input_revision = 0;
+                self.node_input_epoch = self.node_input_epoch.wrapping_add(1);
+                self.node_inputs.clear();
+                self.node_input_subscriptions.clear();
                 self.variations = variations(scale, self.max_move);
                 format!("Loaded scale from slot {}", self.slot)
             }
@@ -263,32 +624,9 @@ impl Editor {
                     < 20.0
                 {
                     self.pair = (scale.root_degree, index);
+                    self.selected_node = index;
                     if index > 0 {
                         self.dragging = Some(index);
-                    }
-                }
-                cx.notify();
-                return;
-            }
-        }
-        if let Some(bounds) = *self.matrix_bounds.borrow() {
-            if contains(bounds, x, y) {
-                let (left, top, step_x, step_y, _) = matrix_area(bounds, scale.count);
-                let column = ((x - left) / step_x).round() as isize;
-                let row = ((y - top) / step_y).round() as isize;
-                if row >= 0
-                    && column >= 0
-                    && row < scale.count as isize
-                    && column < scale.count as isize
-                {
-                    self.pair = (row as usize, column as usize);
-                    if row != column {
-                        let movable = if column == 0 {
-                            row as usize
-                        } else {
-                            column as usize
-                        };
-                        self.pair_drag = Some((movable, y, scale));
                     }
                 }
                 cx.notify();
@@ -304,6 +642,7 @@ impl Editor {
                 }) {
                     if palette_distance(bounds, x, y, *candidate, frame) < 32.0 {
                         self.shared.replace(*candidate);
+                        self.node_input_revision = 0;
                     }
                 }
                 cx.notify();
@@ -315,32 +654,6 @@ impl Editor {
         if event.pressed_button != Some(MouseButton::Left) {
             return;
         }
-        if let Some((index, start_y, base)) = self.pair_drag {
-            let other = if self.pair.0 == index {
-                self.pair.1
-            } else {
-                self.pair.0
-            };
-            let start_fit = pair_fit((base.cents[index] - base.cents[other]).abs());
-            let target =
-                (start_fit + (start_y - f32::from(event.position.y)) / 190.0).clamp(0.0, 1.0);
-            let mut best = base;
-            let mut best_cost = f32::INFINITY;
-            for step in -80..=80 {
-                let mut candidate = base;
-                candidate.move_degree(index, base.cents[index] + step as f32);
-                let fit = pair_fit((candidate.cents[index] - candidate.cents[other]).abs());
-                let cost = (fit - target).abs()
-                    + (candidate.cents[index] - base.cents[index]).abs() * 0.0002;
-                if cost < best_cost {
-                    best_cost = cost;
-                    best = candidate;
-                }
-            }
-            self.shared.replace(best);
-            cx.notify();
-            return;
-        }
         let Some(index) = self.dragging else { return };
         let Some(bounds) = *self.pitch_bounds.borrow() else {
             return;
@@ -349,15 +662,15 @@ impl Editor {
             / (f32::from(bounds.size.width) - 90.0))
             .clamp(0.0, 1.0)
             * self.shared.snapshot().period_cents;
-        self.shared.edit(|scale| {
+        let (_, revision) = self.shared.edit_with_revision(|scale| {
             scale.move_degree(index, cents);
         });
+        self.node_input_revision = revision;
         cx.notify();
     }
 
     fn graph_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.dragging = None;
-        self.pair_drag = None;
         cx.notify();
     }
 
@@ -423,10 +736,14 @@ impl Editor {
     fn apply_control(&mut self, x: f32, shift: bool, bounds: Bounds<Pixels>) {
         let t = ((x - f32::from(bounds.left()) - 8.0) / (f32::from(bounds.size.width) - 16.0))
             .clamp(0.0, 1.0);
+        let mut resulting_revision = None;
         match self.control_drag {
-            Some(0) => self
-                .shared
-                .edit(|scale| scale.root_hz = 55.0 * 2.0_f64.powf(f64::from(t) * 5.0)),
+            Some(0) => {
+                let (_, revision) = self.shared.edit_with_revision(|scale| {
+                    scale.root_hz = 55.0 * 2.0_f64.powf(f64::from(t) * 5.0)
+                });
+                resulting_revision = Some(revision);
+            }
             Some(1) => {
                 let cents = 600.0 + t * 1800.0;
                 let snapped = if shift || self.snap_period {
@@ -443,7 +760,10 @@ impl Editor {
                 } else {
                     cents
                 };
-                self.shared.edit(|scale| scale.set_period(snapped));
+                let (_, revision) = self
+                    .shared
+                    .edit_with_revision(|scale| scale.set_period(snapped));
+                resulting_revision = Some(revision);
             }
             Some(2) => {
                 let next = 10.0 + t * 190.0;
@@ -463,13 +783,16 @@ impl Editor {
             }
             _ => {}
         }
+        if let Some(revision) = resulting_revision {
+            self.node_input_revision = revision;
+        }
     }
 }
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         window.request_animation_frame();
-        let scale = self.shared.snapshot();
+        let (scale, scale_revision) = self.shared.snapshot_with_revision();
         let (revision, last_key) = self.shared.last_played();
         if revision != self.last_played_revision {
             self.last_played_revision = revision;
@@ -477,30 +800,17 @@ impl Render for Editor {
                 self.recent_played = Some((key, Instant::now()));
             }
         }
+        self.ensure_node_inputs(scale, scale_revision, cx);
         let held_degrees = played_degrees(scale, self.shared.held_keys());
         let recent_degree = self.recent_played.and_then(|(key, when)| {
             (when.elapsed() < Duration::from_millis(160)).then(|| degree_for_key(scale, key))
         });
         let settings = self.shared.synth_settings();
-        let analysis = if let Some((cached_scale, cached)) = self.analysis_cache {
-            if cached_scale == scale {
-                cached
-            } else {
-                let next = Analysis::new(scale);
-                self.analysis_cache = Some((scale, next));
-                next
-            }
-        } else {
-            let next = Analysis::new(scale);
-            self.analysis_cache = Some((scale, next));
-            next
-        };
         let pair = (
             self.pair.0.min(scale.count - 1),
             self.pair.1.min(scale.count - 1),
         );
         let pitch_bounds = Rc::clone(&self.pitch_bounds);
-        let matrix_bounds = Rc::clone(&self.matrix_bounds);
         let palette_bounds = Rc::clone(&self.palette_bounds);
         let root_bounds = Rc::clone(&self.root_bounds);
         let period_bounds = Rc::clone(&self.period_bounds);
@@ -510,27 +820,10 @@ impl Render for Editor {
         let release_bounds = Rc::clone(&self.release_bounds);
         let candidates = self.variations.clone();
         let max_move = self.max_move;
-        let matrix_graph = div()
-            .id("pair-fit-graph")
-            .w_full()
-            .h(px(300.0))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::graph_down))
-            .on_mouse_move(cx.listener(Self::graph_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::graph_up))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::graph_up))
-            .child(
-                canvas(
-                    move |bounds, _, _| *matrix_bounds.borrow_mut() = Some(bounds),
-                    move |bounds, _, window, cx| {
-                        paint_matrix(bounds, scale, pair, analysis, window, cx)
-                    },
-                )
-                .size_full(),
-            );
         let palette_graph = div()
-            .id("scale-space-graph")
+            .id("pitch-space-graph")
             .w_full()
-            .h(px(300.0))
+            .h(px(236.0))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::graph_down))
             .on_mouse_move(cx.listener(Self::graph_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::graph_up))
@@ -538,14 +831,16 @@ impl Render for Editor {
             .child(
                 canvas(
                     move |bounds, _, _| *palette_bounds.borrow_mut() = Some(bounds),
-                    move |bounds, _, window, _| paint_palette(bounds, scale, &candidates, window),
+                    move |bounds, _, window, cx| {
+                        paint_palette(bounds, scale, &candidates, window, cx)
+                    },
                 )
                 .size_full(),
             );
         let pitch_graph = div()
             .id("pitch-line-graph")
             .w_full()
-            .h(px(111.0))
+            .h(px(104.0))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::graph_down))
             .on_mouse_move(cx.listener(Self::graph_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::graph_up))
@@ -659,18 +954,104 @@ impl Render for Editor {
                 )
                 .size_full(),
             );
+        let mut node_rows = Vec::with_capacity(scale.count);
+        for index in 0..scale.count {
+            let hz_input = self.node_inputs[index].0.clone();
+            let cents_input = self.node_inputs[index].1.clone();
+            let selected = index == pair.1;
+            node_rows.push(
+                div()
+                    .id(format!("freq-node-row-{index}"))
+                    .w(px(704.0))
+                    .h(px(29.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(0.0))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.select_node(index, cx)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event, window, cx| {
+                            this.open_node_context(index, event, window, cx)
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(56.0))
+                            .text_size(px(12.0))
+                            .text_color(rgba(if selected { 0xff695fff } else { 0xa9b4acff }))
+                            .child(format!("{:02}", index + 1)),
+                    )
+                    .child(div().w(px(12.0)))
+                    .child(
+                        div()
+                            .w(px(292.0))
+                            .h(px(26.0))
+                            .px(px(6.0))
+                            .flex()
+                            .items_center()
+                            .bg(rgba(0x101615ff))
+                            .border_1()
+                            .border_color(rgba(0x303a35ff))
+                            .rounded(px(5.0))
+                            .child(hz_input),
+                    )
+                    .child(div().w(px(22.0)))
+                    .child(
+                        div()
+                            .w(px(322.0))
+                            .h(px(26.0))
+                            .px(px(6.0))
+                            .flex()
+                            .items_center()
+                            .bg(rgba(0x101615ff))
+                            .border_1()
+                            .border_color(rgba(0x303a35ff))
+                            .rounded(px(5.0))
+                            .child(cents_input),
+                    ),
+            );
+        }
+        let node_scrollbar = if scale.count > 7 {
+            let viewport = 226.0;
+            let max_scroll = f32::from(self.node_scroll.max_offset().y).max(0.0);
+            let content_height = viewport + max_scroll;
+            let thumb_height = (viewport * viewport / content_height).max(20.0);
+            let progress =
+                (-f32::from(self.node_scroll.offset().y) / max_scroll.max(1.0)).clamp(0.0, 1.0);
+            div()
+                .absolute()
+                .right(px(7.0))
+                .top(px(93.0))
+                .w(px(4.0))
+                .h(px(viewport))
+                .bg(rgba(0x232b28ff))
+                .rounded(px(2.0))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(progress * (viewport - thumb_height)))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .h(px(thumb_height))
+                        .bg(rgba(0x67736cff))
+                        .rounded(px(2.0)),
+                )
+        } else {
+            div().hidden()
+        };
         let (status, status_color) = match self.shared.status() {
             MasterStatus::Connecting => ("connecting".to_owned(), 0x777a78ff),
             MasterStatus::Active => (
                 format!("active  ·  {} clients", self.shared.clients()),
-                0xff6057ff,
+                0x9ad4baff,
             ),
             MasterStatus::Blocked => ("another master active".to_owned(), 0xc18c67ff),
             MasterStatus::Unavailable => ("library unavailable".to_owned(), 0x777a78ff),
         };
-        let shapes = analysis.root_shapes(scale);
-        let root_shape = shapes[0];
-        let selected_fit = analysis.pair_fit[pair.0][pair.1];
         let settings_popover = if self.show_settings {
             panel()
                 .id("settings-popover")
@@ -679,6 +1060,10 @@ impl Render for Editor {
                 .right(px(62.0))
                 .w(px(245.0))
                 .p(px(14.0))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .flex_col()
                 .gap(px(9.0))
@@ -709,28 +1094,106 @@ impl Render for Editor {
                 .right(px(22.0))
                 .w(px(330.0))
                 .p(px(16.0))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .flex_col()
                 .gap(px(9.0))
                 .text_size(px(12.0))
-                .child("DRAG NOTES ON THE PITCH LINE TO RETUNE")
+                .child("EDIT NODE PITCH IN HZ OR CENTS")
+                .child("RIGHT-CLICK A NODE TO ADD OR REMOVE IT")
+                .child("SCROLL THE NODE LIST TO SEE MORE NOTES")
+                .child("DRAG A NOTE ON THE PITCH LINE TO RETUNE")
+                .child("CHOOSE A PITCH-SPACE POINT TO APPLY A VARIATION")
                 .child("PLAY MIDI TO HEAR AND HIGHLIGHT NOTES")
-                .child("DRAG LATTICE DOTS TO CHANGE PAIR FIT")
-                .child("CHOOSE A LANDSCAPE POINT TO RETUNE THE SCALE")
                 .child("SHIFT-DRAG THE REPEAT SLIDER TO SNAP RATIOS")
         } else {
             div().id("help-popover").hidden()
+        };
+        let node_context_menu = self.node_context_menu.map(|(index, x, y)| {
+            let left = (x - 34.0).clamp(12.0, WIDTH as f32 - 220.0);
+            let top = (y - 34.0).clamp(92.0, HEIGHT as f32 - 112.0);
+            let can_remove = index != scale.root_degree && scale.count > 3;
+            div()
+                .id("node-context-menu")
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(204.0))
+                .p(px(6.0))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .bg(rgba(0x1a2220ff))
+                .border_1()
+                .border_color(rgba(0x48534cff))
+                .rounded(px(8.0))
+                .child(
+                    control_button("Add node after", false)
+                        .id("add-node-after")
+                        .w_full()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(Self::add_node_after)),
+                )
+                .child(
+                    control_button("Remove node", false)
+                        .id("remove-node")
+                        .w_full()
+                        .text_color(rgba(if can_remove { 0xd8c6c0ff } else { 0x69716bff }))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .when(can_remove, |button| {
+                            button.on_click(cx.listener(Self::remove_selected_node))
+                        }),
+                )
+        });
+        let context_dismiss = if self.node_context_menu.is_some() {
+            div()
+                .id("dismiss-node-menu")
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.node_context_menu = None;
+                        cx.notify();
+                    }),
+                )
+        } else {
+            div().id("dismiss-node-menu").hidden()
         };
         div()
             .relative()
             .w_full()
             .h_full()
-            .p(px(22.0))
             .flex()
             .flex_col()
-            .gap(px(14.0))
-            .bg(rgba(0x0b0e0eff))
-            .text_color(rgba(0xe5e5e1ff))
+            .px(px(34.0))
+            .pt(px(34.0))
+            .pb(px(36.0))
+            .bg(rgba(0x0d1111ff))
+            .text_color(rgba(0xedf0e9ff))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    |bounds, _, window, _| paint_bezel(bounds, window),
+                )
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .w_full()
+                .h_full(),
+            )
             .child(
                 div()
                     .h(px(42.0))
@@ -738,64 +1201,56 @@ impl Render for Editor {
                     .items_center()
                     .child(
                         div()
-                            .text_size(px(42.0))
-                            .text_color(rgba(0xff6057ff))
+                            .text_size(px(34.0))
+                            .font_family(".SystemUIFont")
+                            .text_color(rgba(0xff695fff))
                             .child("freqs"),
                     )
                     .child(
                         div()
-                            .ml(px(22.0))
-                            .mt(px(10.0))
-                            .text_size(px(11.0))
-                            .text_color(rgba(0xa4a6a4ff))
+                            .ml(px(20.0))
+                            .mt(px(8.0))
+                            .text_size(px(10.0))
+                            .text_color(rgba(0x87928aff))
                             .child("MTS-ESP TUNING SYSTEM"),
                     )
                     .child(
                         div()
                             .ml_auto()
-                            .mr(px(62.0))
-                            .flex()
-                            .gap(px(54.0))
-                            .items_center()
-                            .text_size(px(13.0))
-                            .child(div().text_color(rgba(0x939694ff)).child("EXPLORE"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(10.0))
-                                    .child("TUNE")
-                                    .child(div().h(px(4.0)).bg(rgba(0xff6057ff))),
-                            ),
+                            .text_size(px(10.0))
+                            .text_color(rgba(0x69736cff))
+                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                     )
-                    .child(div().h(px(38.0)).w(px(1.0)).bg(rgba(0x303535ff)))
                     .child(
                         div()
-                            .mx(px(30.0))
+                            .ml(px(20.0))
                             .flex()
-                            .gap(px(12.0))
                             .items_center()
+                            .gap(px(8.0))
                             .child(
                                 div()
-                                    .w(px(14.0))
-                                    .h(px(14.0))
-                                    .rounded(px(7.0))
+                                    .w(px(7.0))
+                                    .h(px(7.0))
+                                    .rounded(px(4.0))
                                     .bg(rgba(status_color)),
                             )
-                            .child(div().text_size(px(13.0)).child("MTS-ESP"))
                             .child(
                                 div()
-                                    .ml(px(8.0))
-                                    .text_size(px(11.0))
-                                    .text_color(rgba(0xa4a6a4ff))
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(0xa9b4acff))
+                                    .child("MTS-ESP"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(0x87928aff))
                                     .child(status),
                             ),
                     )
-                    .child(div().h(px(38.0)).w(px(1.0)).bg(rgba(0x303535ff)))
                     .child(
                         control_button("⚙", self.show_settings)
                             .id("settings")
-                            .ml(px(24.0))
+                            .ml(px(14.0))
                             .on_click(cx.listener(Self::toggle_settings)),
                     )
                     .child(
@@ -807,431 +1262,518 @@ impl Render for Editor {
             )
             .child(
                 div()
-                    .h(px(392.0))
+                    .mt(px(28.0))
+                    .h(px(336.0))
+                    .flex_shrink_0()
                     .flex()
-                    .gap(px(16.0))
+                    .gap(px(20.0))
                     .child(
                         panel()
-                            .w(px(650.0))
+                            .w(px(756.0))
                             .h_full()
-                            .p(px(20.0))
+                            .p(px(18.0))
                             .flex()
                             .flex_col()
-                            .child(section_title("NOTE LATTICE"))
-                            .child(div().mt(px(6.0)).h(px(2.0)).bg(rgba(0x303535ff)))
-                            .child(div().h(px(10.0)))
-                            .child(matrix_graph),
+                            .relative()
+                            .child(section_title("01  /  Nodes"))
+                            .child(
+                                div()
+                                    .ml(px(12.0))
+                                    .mt(px(34.0))
+                                    .h(px(16.0))
+                                    .flex()
+                                    .gap(px(0.0))
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(0xa9b4acff))
+                                    .child(div().w(px(68.0)).child("NODE"))
+                                    .child(div().w(px(12.0)))
+                                    .child(div().w(px(292.0)).child("PITCH  ·  Hz"))
+                                    .child(div().w(px(22.0)))
+                                    .child(div().w(px(322.0)).child("CENTS")),
+                            )
+                            .child(
+                                div().ml(px(12.0)).mt(px(7.0)).flex().gap(px(12.0)).child(
+                                    div()
+                                        .id("node-list-scroll")
+                                        .w(px(704.0))
+                                        .h(px(226.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .overflow_y_scroll()
+                                        .track_scroll(&self.node_scroll)
+                                        .children(node_rows),
+                                ),
+                            )
+                            .child(node_scrollbar),
                     )
                     .child(
                         panel()
-                            .w(px(826.0))
+                            .w(px(756.0))
                             .h_full()
-                            .p(px(20.0))
+                            .p(px(18.0))
                             .flex()
                             .flex_col()
                             .child(
                                 div()
+                                    .h(px(26.0))
                                     .flex()
                                     .items_center()
-                                    .child(section_title("SCALE LANDSCAPE"))
+                                    .child(section_title("02  /  Pitch space"))
                                     .child(
                                         div()
                                             .ml_auto()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(14.0))
-                                            .text_size(px(12.0))
-                                            .child("REACH")
-                                            .child(format!("±{max_move:.0}¢"))
-                                            .child(div().w(px(190.0)).child(max_move_slider)),
-                                    ),
+                                            .text_size(px(10.0))
+                                            .text_color(rgba(0xa9b4acff))
+                                            .child(format!("REACH  ±{max_move:.0}¢")),
+                                    )
+                                    .child(div().ml(px(12.0)).w(px(132.0)).child(max_move_slider)),
                             )
-                            .child(div().h(px(8.0)))
                             .child(palette_graph)
                             .child(
-                                div().mt(px(2.0)).flex().items_center().child(
-                                    control_button("↻  NEW VARIATIONS", false)
-                                        .id("regenerate")
-                                        .ml_auto()
-                                        .h(px(28.0))
-                                        .on_click(cx.listener(Self::regenerate)),
-                                ),
+                                div()
+                                    .mt(px(4.0))
+                                    .h(px(28.0))
+                                    .flex()
+                                    .items_center()
+                                    .child(div().flex_1())
+                                    .child(
+                                        control_button("⚄", false)
+                                            .id("regenerate")
+                                            .ml_auto()
+                                            .w(px(38.0))
+                                            .h(px(28.0))
+                                            .on_click(cx.listener(Self::regenerate)),
+                                    ),
                             ),
                     ),
             )
             .child(
                 panel()
-                    .h(px(172.0))
-                    .p(px(20.0))
+                    .mt(px(20.0))
+                    .h(px(142.0))
+                    .flex_shrink_0()
+                    .px(px(16.0))
+                    .py(px(11.0))
                     .flex()
                     .flex_col()
-                    .child(section_title("PITCH LINE"))
+                    .child(section_title("03  /  Pitch line"))
                     .child(pitch_graph),
             )
             .child(
                 div()
+                    .mt(px(20.0))
+                    .h(px(256.0))
+                    .flex_shrink_0()
                     .flex()
-                    .gap(px(16.0))
-                    .h(px(261.0))
+                    .gap(px(20.0))
                     .child(
-                        div()
-                            .w(px(1176.0))
+                        panel()
+                            .w(px(756.0))
+                            .h_full()
+                            .p(px(22.0))
                             .flex()
                             .flex_col()
-                            .gap(px(14.0))
+                            .child(section_title("04  /  Reference"))
                             .child(
                                 div()
+                                    .mt(px(18.0))
+                                    .h(px(68.0))
                                     .flex()
-                                    .gap(px(14.0))
-                                    .h(px(185.0))
+                                    .gap(px(0.0))
                                     .child(
-                                        panel()
-                                            .w(px(616.0))
-                                            .h_full()
-                                            .p(px(20.0))
+                                        div()
+                                            .w(px(220.0))
                                             .flex()
                                             .flex_col()
-                                            .child(section_title("TUNING"))
+                                            .gap(px(8.0))
+                                            .child(field_label("ROOT DEGREE"))
                                             .child(
                                                 div()
-                                                    .mt(px(9.0))
-                                                    .flex()
-                                                    .gap(px(14.0))
-                                                    .text_size(px(11.0))
-                                                    .child(
-                                                        div()
-                                                            .w(px(172.0))
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap(px(5.0))
-                                                            .child("ROOT DEGREE")
-                                                            .child(
-                                                                div()
-                                                                    .flex()
-                                                                    .gap(px(5.0))
-                                                                    .items_center()
-                                                                    .child(
-                                                                        control_button("‹", false)
-                                                                            .id("root-previous")
-                                                                            .on_click(cx.listener(
-                                                                                Self::root_previous,
-                                                                            )),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .w(px(66.0))
-                                                                            .text_size(px(15.0))
-                                                                            .child(format!(
-                                                                                "{}",
-                                                                                scale.root_degree
-                                                                                    + 1
-                                                                            )),
-                                                                    )
-                                                                    .child(
-                                                                        control_button("›", false)
-                                                                            .id("root-next")
-                                                                            .on_click(cx.listener(
-                                                                                Self::root_next,
-                                                                            )),
-                                                                    ),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .w(px(186.0))
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap(px(5.0))
-                                                            .child(format!(
-                                                                "ROOT PITCH   {:.2} Hz",
-                                                                scale.root_hz
-                                                            ))
-                                                            .child(root_slider),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .w(px(172.0))
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap(px(5.0))
-                                                            .child("MIDI KEY")
-                                                            .child(
-                                                                div()
-                                                                    .flex()
-                                                                    .gap(px(5.0))
-                                                                    .items_center()
-                                                                    .child(
-                                                                        control_button("‹", false)
-                                                                            .id("key-previous")
-                                                                            .on_click(cx.listener(
-                                                                                Self::key_previous,
-                                                                            )),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .w(px(52.0))
-                                                                            .text_size(px(15.0))
-                                                                            .child(format!(
-                                                                                "{}",
-                                                                                scale.root_key
-                                                                            )),
-                                                                    )
-                                                                    .child(
-                                                                        control_button("›", false)
-                                                                            .id("key-next")
-                                                                            .on_click(cx.listener(
-                                                                                Self::key_next,
-                                                                            )),
-                                                                    ),
-                                                            ),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .mt(px(12.0))
                                                     .flex()
                                                     .items_center()
-                                                    .text_size(px(11.0))
-                                                    .child(format!(
-                                                        "OCTAVE / REPEAT   {:.1}¢  ({:.3}:1)",
+                                                    .gap(px(8.0))
+                                                    .child(
+                                                        control_button("‹", false)
+                                                            .id("root-previous")
+                                                            .on_click(
+                                                                cx.listener(Self::root_previous),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .w(px(36.0))
+                                                            .text_size(px(16.0))
+                                                            .child(format!(
+                                                                "{:02}",
+                                                                scale.root_degree + 1
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        control_button("›", false)
+                                                            .id("root-next")
+                                                            .on_click(cx.listener(Self::root_next)),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(px(34.0))
+                                            .w(px(250.0))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(8.0))
+                                            .child(field_value_label(
+                                                "ROOT PITCH",
+                                                format!("{:.2} Hz", scale.root_hz),
+                                            ))
+                                            .child(root_slider),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(px(93.0))
+                                            .w(px(119.0))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(8.0))
+                                            .child(field_label("MIDI KEY"))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.0))
+                                                    .child(
+                                                        control_button("‹", false)
+                                                            .id("key-previous")
+                                                            .on_click(
+                                                                cx.listener(Self::key_previous),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .w(px(28.0))
+                                                            .text_size(px(16.0))
+                                                            .child(format!(
+                                                                "{:02}",
+                                                                scale.root_key
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        control_button("›", false)
+                                                            .id("key-next")
+                                                            .on_click(cx.listener(Self::key_next)),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                            .child(div().mt(px(12.0)).h(px(1.0)).bg(rgba(0x252e2aff)))
+                            .child(
+                                div().mt(px(10.0)).h(px(16.0)).flex().items_center().child(
+                                    div()
+                                        .flex_1()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(10.0))
+                                        .child(
+                                            div()
+                                                .text_color(rgba(0xa9b4acff))
+                                                .child("OCTAVE / REPEAT"),
+                                        )
+                                        .child(div().ml_auto().text_color(rgba(0xedf0e9ff)).child(
+                                            format!(
+                                                        "{:.1}¢  ·  {:.3}:1",
                                                         scale.period_cents,
                                                         2.0_f64.powf(
                                                             f64::from(scale.period_cents) / 1200.0
                                                         )
-                                                    ))
-                                                    .child(
-                                                        div()
-                                                            .ml_auto()
-                                                            .text_color(rgba(0x999d9aff))
-                                                            .child("SNAP RATIOS"),
-                                                    )
-                                                    .child(
-                                                        control_button(
-                                                            if self.snap_period {
-                                                                "ON"
-                                                            } else {
-                                                                "OFF"
-                                                            },
-                                                            self.snap_period,
-                                                        )
-                                                        .id("shift-snaps")
-                                                        .ml(px(8.0))
-                                                        .h(px(25.0))
-                                                        .on_click(
-                                                            cx.listener(Self::toggle_snap_period),
-                                                        ),
                                                     ),
-                                            )
-                                            .child(period_slider),
-                                    )
-                                    .child(
-                                        panel()
-                                            .w(px(546.0))
-                                            .h_full()
-                                            .p(px(20.0))
-                                            .flex()
-                                            .flex_col()
-                                            .child(section_title("SCALE"))
-                                            .child(
-                                                div()
-                                                    .mt(px(9.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(6.0))
-                                                    .text_size(px(11.0))
-                                                    .child(
-                                                        div().mr(px(7.0)).child("NOTES / REPEAT"),
-                                                    )
-                                                    .child(
-                                                        control_button("−", false)
-                                                            .id("fewer")
-                                                            .on_click(cx.listener(Self::fewer)),
-                                                    )
-                                                    .child(
-                                                        control_button("+", false)
-                                                            .id("more")
-                                                            .on_click(cx.listener(Self::more)),
-                                                    )
-                                                    .child(
-                                                        control_button("7", scale.count == 7)
-                                                            .id("count-7")
-                                                            .on_click(cx.listener(Self::count_7)),
-                                                    )
-                                                    .child(
-                                                        control_button("12", scale.count == 12)
-                                                            .id("count-12")
-                                                            .on_click(cx.listener(Self::count_12)),
-                                                    )
-                                                    .child(
-                                                        control_button("24", scale.count == 24)
-                                                            .id("count-24")
-                                                            .on_click(cx.listener(Self::count_24)),
-                                                    )
-                                                    .child(
-                                                        control_button("36", scale.count == 36)
-                                                            .id("count-36")
-                                                            .on_click(cx.listener(Self::count_36)),
-                                                    )
-                                                    .child(
-                                                        control_button("48", scale.count == 48)
-                                                            .id("count-48")
-                                                            .on_click(cx.listener(Self::count_48)),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .mt(px(13.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(6.0))
-                                                    .text_size(px(12.0))
-                                                    .child(
-                                                        control_button("‹", false)
-                                                            .id("previous-slot")
-                                                            .on_click(
-                                                                cx.listener(Self::previous_slot),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        control_button("›", false)
-                                                            .id("next-slot")
-                                                            .on_click(cx.listener(Self::next_slot)),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .w(px(183.0))
-                                                            .px(px(10.0))
-                                                            .py(px(8.0))
-                                                            .border_1()
-                                                            .border_color(rgba(0x303636ff))
-                                                            .child(format!(
-                                                                "SLOT {}   ·   {}",
-                                                                self.slot,
-                                                                if library::slot_exists(self.slot) {
-                                                                    "SAVED"
-                                                                } else {
-                                                                    "EMPTY"
-                                                                }
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        control_button("↓ SAVE", false)
-                                                            .id("save-slot")
-                                                            .on_click(cx.listener(Self::save)),
-                                                    )
-                                                    .child(
-                                                        control_button("▣ LOAD", false)
-                                                            .id("load-slot")
-                                                            .on_click(cx.listener(Self::load)),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .mt(px(6.0))
-                                                    .text_size(px(10.0))
-                                                    .text_color(rgba(0x999d9aff))
-                                                    .child(self.message.clone()),
-                                            ),
-                                    ),
+                                        )),
+                                ),
                             )
+                            .child(div().mt(px(12.0)).child(period_slider))
                             .child(
-                                panel()
-                                    .h(px(62.0))
-                                    .px(px(20.0))
+                                div()
+                                    .mt(px(3.0))
+                                    .h(px(26.0))
                                     .flex()
                                     .items_center()
-                                    .gap(px(12.0))
-                                    .child(section_title("AUDITION"))
-                                    .child(
-                                        control_button("△", settings.waveform.index() == 0)
-                                            .id("triangle-wave")
-                                            .ml(px(15.0))
-                                            .on_click(cx.listener(Self::triangle)),
-                                    )
-                                    .child(
-                                        control_button("◩", settings.waveform.index() == 1)
-                                            .id("square-wave")
-                                            .on_click(cx.listener(Self::square)),
-                                    )
-                                    .child(
-                                        control_button("╱", settings.waveform.index() == 2)
-                                            .id("saw-wave")
-                                            .on_click(cx.listener(Self::saw)),
-                                    )
+                                    .justify_end()
+                                    .gap(px(10.0))
                                     .child(
                                         div()
-                                            .ml(px(12.0))
-                                            .h(px(28.0))
-                                            .w(px(1.0))
-                                            .bg(rgba(0x343939ff)),
+                                            .text_size(px(10.0))
+                                            .text_color(rgba(0xa9b4acff))
+                                            .child("SNAP RATIOS"),
                                     )
                                     .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .child(format!("LVL  {:.0}%", settings.level * 100.0)),
-                                    )
-                                    .child(div().w(px(130.0)).child(level_slider))
-                                    .child(div().h(px(28.0)).w(px(1.0)).bg(rgba(0x343939ff)))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .child(format!("A  {:.0} ms", settings.attack_ms)),
-                                    )
-                                    .child(div().w(px(130.0)).child(attack_slider))
-                                    .child(div().h(px(28.0)).w(px(1.0)).bg(rgba(0x343939ff)))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .child(format!("R  {:.0} ms", settings.release_ms)),
-                                    )
-                                    .child(div().w(px(155.0)).child(release_slider)),
+                                        control_button(
+                                            if self.snap_period { "ON" } else { "OFF" },
+                                            self.snap_period,
+                                        )
+                                        .id("shift-snaps")
+                                        .w(px(64.0))
+                                        .h(px(26.0))
+                                        .on_click(cx.listener(Self::toggle_snap_period)),
+                                    ),
                             ),
                     )
                     .child(
                         panel()
-                            .w(px(300.0))
-                            .h(px(212.0))
-                            .p(px(18.0))
+                            .w(px(756.0))
+                            .h_full()
+                            .p(px(20.0))
                             .flex()
                             .flex_col()
-                            .gap(px(10.0))
-                            .child(section_title("SCALE STATS"))
-                            .child(stat_row(
-                                "COHESION",
-                                format!("{:.0}%", analysis.coordinates.cohesion * 100.0),
-                            ))
-                            .child(stat_row(
-                                "ROOT GRAVITY",
-                                format!("{:.0}%", analysis.coordinates.root_gravity * 100.0),
-                            ))
-                            .child(stat_row(
-                                "ENERGY",
-                                format!("{:.0}%", analysis.coordinates.energy * 100.0),
-                            ))
-                            .child(stat_row(
-                                "PAIR FIT",
-                                format!("{:.0}%", selected_fit * 100.0),
-                            ))
-                            .child(stat_row(
-                                "ROOT SHAPE",
-                                format!(
-                                    "{}–{}–{}  ({:.0}%)",
-                                    scale.root_degree + 1,
-                                    root_shape.0 + 1,
-                                    root_shape.1 + 1,
-                                    root_shape.2 * 100.0
-                                ),
-                            )),
+                            .child(section_title("05  /  Slots & structure"))
+                            .child(
+                                div()
+                                    .mt(px(18.0))
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(0xa9b4acff))
+                                    .child("NOTES PER REPEAT"),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(7.0))
+                                    .h(px(38.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        control_button("−", false)
+                                            .id("fewer")
+                                            .w(px(40.0))
+                                            .on_click(cx.listener(Self::fewer)),
+                                    )
+                                    .child(
+                                        control_button("+", false)
+                                            .id("more")
+                                            .w(px(40.0))
+                                            .on_click(cx.listener(Self::more)),
+                                    )
+                                    .child(
+                                        control_button("7", scale.count == 7)
+                                            .id("count-7")
+                                            .w(px(54.0))
+                                            .on_click(cx.listener(Self::count_7)),
+                                    )
+                                    .child(div().w(px(44.0)))
+                                    .child(
+                                        control_button("12", scale.count == 12)
+                                            .id("count-12")
+                                            .w(px(110.0))
+                                            .on_click(cx.listener(Self::count_12)),
+                                    )
+                                    .child(
+                                        control_button("24", scale.count == 24)
+                                            .id("count-24")
+                                            .ml(px(6.0))
+                                            .w(px(110.0))
+                                            .on_click(cx.listener(Self::count_24)),
+                                    )
+                                    .child(
+                                        control_button("36", scale.count == 36)
+                                            .id("count-36")
+                                            .ml(px(6.0))
+                                            .w(px(110.0))
+                                            .on_click(cx.listener(Self::count_36)),
+                                    )
+                                    .child(
+                                        control_button("48", scale.count == 48)
+                                            .id("count-48")
+                                            .ml(px(6.0))
+                                            .w(px(110.0))
+                                            .on_click(cx.listener(Self::count_48)),
+                                    ),
+                            )
+                            .child(div().mt(px(11.0)).h(px(1.0)).bg(rgba(0x252e2aff)))
+                            .child(
+                                div()
+                                    .mt(px(11.0))
+                                    .h(px(38.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        control_button("‹", false)
+                                            .id("previous-slot")
+                                            .w(px(40.0))
+                                            .on_click(cx.listener(Self::previous_slot)),
+                                    )
+                                    .child(
+                                        control_button("›", false)
+                                            .id("next-slot")
+                                            .w(px(40.0))
+                                            .on_click(cx.listener(Self::next_slot)),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(px(4.0))
+                                            .w(px(320.0))
+                                            .h(px(34.0))
+                                            .px(px(10.0))
+                                            .flex()
+                                            .items_center()
+                                            .bg(rgba(0x101615ff))
+                                            .border_1()
+                                            .border_color(rgba(0x303a35ff))
+                                            .rounded(px(6.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.0))
+                                                    .child(format!("SLOT {:02}", self.slot)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .ml_auto()
+                                                    .text_size(px(10.0))
+                                                    .text_color(rgba(0xa9b4acff))
+                                                    .child(if library::slot_exists(self.slot) {
+                                                        "SAVED"
+                                                    } else {
+                                                        "EMPTY"
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        control_button("↓  SAVE", false)
+                                            .id("save-slot")
+                                            .ml(px(5.0))
+                                            .w(px(130.0))
+                                            .on_click(cx.listener(Self::save)),
+                                    )
+                                    .child(
+                                        control_button("□  LOAD", false)
+                                            .id("load-slot")
+                                            .ml(px(5.0))
+                                            .w(px(136.0))
+                                            .on_click(cx.listener(Self::load)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(5.0))
+                                    .h(px(14.0))
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(0x87928aff))
+                                    .child(self.message.clone()),
+                            ),
                     ),
             )
             .child(
-                div()
-                    .mt_auto()
-                    .ml_auto()
-                    .text_size(px(10.0))
-                    .text_color(rgba(0x727775ff))
-                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                panel()
+                    .mt(px(18.0))
+                    .h(px(68.0))
+                    .flex_shrink_0()
+                    .px(px(22.0))
+                    .py(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(24.0))
+                    .child(
+                        div()
+                            .w(px(244.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .w(px(78.0))
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(0xff695fff))
+                                    .child("AUDITION"),
+                            )
+                            .child(
+                                control_button("△", settings.waveform.index() == 0)
+                                    .id("triangle-wave")
+                                    .w(px(40.0))
+                                    .h(px(30.0))
+                                    .on_click(cx.listener(Self::triangle)),
+                            )
+                            .child(
+                                control_button("▧", settings.waveform.index() == 1)
+                                    .id("square-wave")
+                                    .w(px(40.0))
+                                    .h(px(30.0))
+                                    .on_click(cx.listener(Self::square)),
+                            )
+                            .child(
+                                control_button("／", settings.waveform.index() == 2)
+                                    .id("saw-wave")
+                                    .w(px(40.0))
+                                    .h(px(30.0))
+                                    .on_click(cx.listener(Self::saw)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(366.0))
+                            .ml(px(6.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
+                            .child(
+                                div()
+                                    .h(px(16.0))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(10.0))
+                                    .child("LEVEL")
+                                    .child(
+                                        div()
+                                            .ml_auto()
+                                            .child(format!("{:.0}%", settings.level * 100.0)),
+                                    ),
+                            )
+                            .child(div().w_full().child(level_slider)),
+                    )
+                    .child(
+                        div()
+                            .w(px(366.0))
+                            .ml(px(34.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
+                            .child(
+                                div()
+                                    .h(px(16.0))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(10.0))
+                                    .child("ATTACK")
+                                    .child(
+                                        div()
+                                            .ml_auto()
+                                            .child(format!("{:.0} ms", settings.attack_ms)),
+                                    ),
+                            )
+                            .child(div().w_full().child(attack_slider)),
+                    )
+                    .child(
+                        div()
+                            .w(px(366.0))
+                            .ml(px(34.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
+                            .child(
+                                div()
+                                    .h(px(16.0))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(10.0))
+                                    .child("RELEASE")
+                                    .child(
+                                        div()
+                                            .ml_auto()
+                                            .child(format!("{:.0} ms", settings.release_ms)),
+                                    ),
+                            )
+                            .child(div().w_full().child(release_slider)),
+                    ),
             )
+            .child(context_dismiss)
+            .children(node_context_menu)
             .child(settings_popover)
             .child(help_popover)
     }
@@ -1246,25 +1788,41 @@ fn contains(bounds: Bounds<Pixels>, x: f32, y: f32) -> bool {
 
 fn panel() -> gpui::Div {
     div()
-        .bg(rgba(0x101313ff))
+        .bg(gpui::linear_gradient(
+            180.0,
+            gpui::linear_color_stop(rgba(0x171e1bff), 0.0),
+            gpui::linear_color_stop(rgba(0x111615ff), 1.0),
+        ))
         .border_1()
-        .border_color(rgba(0x2b3030ff))
+        .border_color(rgba(0x303a35ff))
+        .rounded(px(10.0))
 }
 
 fn section_title(title: &'static str) -> gpui::Div {
     div()
         .flex()
         .items_center()
-        .child(div().w(px(6.0)).h(px(28.0)).bg(rgba(0xd2443bff)))
-        .child(
-            div()
-                .h(px(28.0))
-                .px(px(12.0))
-                .bg(rgba(0xff6057ff))
-                .text_color(rgba(0x111010ff))
-                .text_size(px(19.0))
-                .child(title),
-        )
+        .h(px(18.0))
+        .text_size(px(10.0))
+        .text_color(rgba(0xa9b4acff))
+        .child(title.to_uppercase())
+}
+
+fn field_label(label: &'static str) -> gpui::Div {
+    div()
+        .text_size(px(10.0))
+        .text_color(rgba(0xa9b4acff))
+        .child(label)
+}
+
+fn field_value_label(label: &'static str, value: String) -> gpui::Div {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .text_size(px(10.0))
+        .child(div().text_color(rgba(0xa9b4acff)).child(label))
+        .child(div().ml_auto().text_color(rgba(0xedf0e9ff)).child(value))
 }
 
 fn control_button(label: impl Into<gpui::SharedString>, active: bool) -> gpui::Div {
@@ -1275,21 +1833,13 @@ fn control_button(label: impl Into<gpui::SharedString>, active: bool) -> gpui::D
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgba(if active { 0x2b1817ff } else { 0x151919ff }))
+        .bg(rgba(if active { 0x30201eff } else { 0x1a2220ff }))
         .border_1()
-        .border_color(rgba(if active { 0xed5c51ff } else { 0x303636ff }))
-        .text_color(rgba(if active { 0xff756bff } else { 0xd1d1ceff }))
+        .border_color(rgba(if active { 0xaa514bff } else { 0x303a35ff }))
+        .rounded(px(7.0))
+        .text_color(rgba(if active { 0xff695fff } else { 0xa9b4acff }))
         .text_size(px(13.0))
         .child(label.into())
-}
-
-fn stat_row(label: &'static str, value: String) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .text_size(px(12.0))
-        .child(div().text_color(rgba(0xc7c8c5ff)).child(label))
-        .child(div().ml_auto().text_color(rgba(0xf1f0ebff)).child(value))
 }
 
 fn rect(window: &mut Window, left: f32, top: f32, right: f32, bottom: f32, color: u32) {
@@ -1297,6 +1847,118 @@ fn rect(window: &mut Window, left: f32, top: f32, right: f32, bottom: f32, color
         Bounds::from_corners(point(px(left), px(top)), point(px(right), px(bottom))),
         rgba(color),
     ));
+}
+
+fn paint_gradient_polygon(
+    window: &mut Window,
+    points: &[(f32, f32)],
+    angle: f32,
+    start: u32,
+    end: u32,
+) {
+    let Some(&(first_x, first_y)) = points.first() else {
+        return;
+    };
+    let mut path = PathBuilder::fill();
+    path.move_to(point(px(first_x), px(first_y)));
+    for &(x, y) in points.iter().skip(1) {
+        path.line_to(point(px(x), px(y)));
+    }
+    path.close();
+    if let Ok(path) = path.build() {
+        window.paint_path(
+            path,
+            gpui::linear_gradient(
+                angle,
+                gpui::linear_color_stop(rgba(start), 0.0),
+                gpui::linear_color_stop(rgba(end), 1.0),
+            ),
+        );
+    }
+}
+
+/// Draw the tapered metal plates and inset perimeter from the Frame concept.
+fn paint_bezel(bounds: Bounds<Pixels>, window: &mut Window) {
+    let sx = f32::from(bounds.size.width) / 1600.0;
+    let sy = f32::from(bounds.size.height) / 1000.0;
+    let point_at = |x: f32, y: f32| {
+        (
+            f32::from(bounds.left()) + x * sx,
+            f32::from(bounds.top()) + y * sy,
+        )
+    };
+    let plate = |points: &[(f32, f32)]| {
+        points
+            .iter()
+            .map(|&(x, y)| point_at(x, y))
+            .collect::<Vec<_>>()
+    };
+    let top = plate(&[(652.0, 0.0), (948.0, 0.0), (884.0, 23.0), (716.0, 23.0)]);
+    let bottom = plate(&[
+        (716.0, 979.0),
+        (884.0, 979.0),
+        (942.0, 1000.0),
+        (658.0, 1000.0),
+    ]);
+    let left = plate(&[(0.0, 442.0), (29.0, 460.0), (29.0, 602.0), (0.0, 620.0)]);
+    let right = plate(&[
+        (1571.0, 460.0),
+        (1600.0, 442.0),
+        (1600.0, 620.0),
+        (1571.0, 602.0),
+    ]);
+    paint_gradient_polygon(window, &top, 135.0, 0x35403aff, 0x2c3530ff);
+    paint_gradient_polygon(window, &bottom, 135.0, 0x282f2bff, 0x222925ff);
+    paint_gradient_polygon(window, &left, 135.0, 0x292f2cff, 0x222825ff);
+    paint_gradient_polygon(window, &right, 135.0, 0x37413cff, 0x29312dff);
+
+    for ((x1, y1), (x2, y2)) in [
+        (point_at(680.0, 10.0), point_at(716.0, 23.0)),
+        (point_at(884.0, 23.0), point_at(920.0, 10.0)),
+        (point_at(1590.0, 448.0), point_at(1571.0, 460.0)),
+        (point_at(1571.0, 602.0), point_at(1590.0, 614.0)),
+        (point_at(920.0, 992.0), point_at(884.0, 979.0)),
+        (point_at(716.0, 979.0), point_at(680.0, 992.0)),
+        (point_at(10.0, 614.0), point_at(29.0, 602.0)),
+        (point_at(29.0, 460.0), point_at(10.0, 448.0)),
+    ] {
+        line(window, (x1, y1), (x2, y2), 0x5c675fff, 1.0);
+    }
+
+    let outline = [
+        (10.0, 10.0),
+        (680.0, 10.0),
+        (716.0, 23.0),
+        (884.0, 23.0),
+        (920.0, 10.0),
+        (1590.0, 10.0),
+        (1590.0, 448.0),
+        (1571.0, 460.0),
+        (1571.0, 602.0),
+        (1590.0, 614.0),
+        (1590.0, 990.0),
+        (920.0, 990.0),
+        (884.0, 979.0),
+        (716.0, 979.0),
+        (680.0, 990.0),
+        (10.0, 990.0),
+        (10.0, 614.0),
+        (29.0, 602.0),
+        (29.0, 460.0),
+        (10.0, 448.0),
+    ];
+    let outline = plate(&outline);
+    let mut path = PathBuilder::stroke(px(1.2));
+    if let Some(&(x, y)) = outline.first() {
+        path.move_to(point(px(x), px(y)));
+        for &(x, y) in outline.iter().skip(1) {
+            path.line_to(point(px(x), px(y)));
+        }
+        path.close();
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, rgba(0x46514aff));
+    }
 }
 
 fn circle(window: &mut Window, x: f32, y: f32, radius: f32, color: u32) {
@@ -1310,12 +1972,6 @@ fn circle(window: &mut Window, x: f32, y: f32, radius: f32, color: u32) {
         )
         .corner_radii(px(radius)),
     );
-}
-
-fn score_color(score: f32) -> u32 {
-    let t = score.clamp(0.0, 1.0).powf(3.0);
-    let blend = |low: f32, high: f32| (low + (high - low) * t).round() as u32;
-    (blend(45.0, 255.0) << 24) | (blend(51.0, 99.0) << 16) | (blend(51.0, 88.0) << 8) | 0xff
 }
 
 fn canvas_label(
@@ -1389,15 +2045,7 @@ fn paint_pitch(
     let top = f32::from(bounds.top());
     let right = f32::from(bounds.right());
     let bottom = f32::from(bounds.bottom());
-    rect(window, left, top, right, bottom, 0x101414ff);
-    for row in 0..4 {
-        let y = top + 10.0 + row as f32 * 24.0;
-        let mut x = left + 8.0;
-        while x < right - 8.0 {
-            circle(window, x, y, 0.65, 0x2a3030ff);
-            x += 24.0;
-        }
-    }
+    rect(window, left, top, right, bottom, 0x131918ff);
     let mid = top + 51.0;
     line(
         window,
@@ -1433,7 +2081,16 @@ fn paint_pitch(
                 0xf0f0edff
             },
         );
-        if scale.count <= 12 {
+        canvas_label(
+            window,
+            cx,
+            (index + 1).to_string(),
+            x - if scale.count > 24 { 4.0 } else { 5.0 },
+            mid - 27.0,
+            if scale.count > 24 { 8.5 } else { 10.0 },
+            if selected { 0xff695fff } else { 0xa9b4acff },
+        );
+        if scale.count <= 12 || selected || is_root {
             let label = if index == 0 {
                 "0.0¢".to_owned()
             } else {
@@ -1443,7 +2100,13 @@ fn paint_pitch(
         }
     }
     let end = pitch_x(bounds, 1200.0);
-    circle(window, end, mid, 10.0, 0xff6057ff);
+    line(
+        window,
+        (end, top + 23.0),
+        (end, bottom - 16.0),
+        0x4d5752ff,
+        1.0,
+    );
     if scale.count <= 12 {
         canvas_label(
             window,
@@ -1457,79 +2120,6 @@ fn paint_pitch(
     }
 }
 
-fn matrix_area(bounds: Bounds<Pixels>, count: usize) -> (f32, f32, f32, f32, f32) {
-    let step_x = (f32::from(bounds.size.width) - 142.0) / (count - 1) as f32;
-    let step_y = (f32::from(bounds.size.height) - 69.0) / (count - 1) as f32;
-    (
-        f32::from(bounds.left()) + 94.0,
-        f32::from(bounds.top()) + 42.0,
-        step_x,
-        step_y,
-        (step_x.min(step_y) * 0.31).clamp(2.0, 11.0),
-    )
-}
-
-fn paint_matrix(
-    bounds: Bounds<Pixels>,
-    scale: Scale,
-    pair: (usize, usize),
-    analysis: Analysis,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    rect(
-        window,
-        f32::from(bounds.left()),
-        f32::from(bounds.top()),
-        f32::from(bounds.right()),
-        f32::from(bounds.bottom()),
-        0x111515ff,
-    );
-    let (left, top, step_x, step_y, radius) = matrix_area(bounds, scale.count);
-    for column in 0..scale.count {
-        let x = left + column as f32 * step_x;
-        if scale.count <= 16 || column % (scale.count / 12).max(1) == 0 {
-            canvas_label(
-                window,
-                cx,
-                column.to_string(),
-                x - 4.0,
-                top - 31.0,
-                10.0,
-                0xc4c7c3ff,
-            );
-        }
-    }
-    for row in 0..scale.count {
-        let y = top + row as f32 * step_y;
-        if scale.count <= 16 || row % (scale.count / 12).max(1) == 0 {
-            canvas_label(
-                window,
-                cx,
-                (row + 1).to_string(),
-                left - 37.0,
-                y - 7.0,
-                10.0,
-                0xc4c7c3ff,
-            );
-        }
-        for column in 0..scale.count {
-            let fit = analysis.pair_fit[row][column];
-            let color = if row == column {
-                0x343939ff
-            } else {
-                score_color(fit)
-            };
-            let x = left + column as f32 * step_x;
-            if (row, column) == pair || (column, row) == pair {
-                circle(window, x, y, radius + 4.0, 0xff655bff);
-                circle(window, x, y, radius + 1.5, 0x101414ff);
-            }
-            circle(window, x, y, radius, color);
-        }
-    }
-}
-
 fn paint_slider(bounds: Bounds<Pixels>, value: f32, window: &mut Window) {
     let left = f32::from(bounds.left());
     let top = f32::from(bounds.top());
@@ -1538,24 +2128,16 @@ fn paint_slider(bounds: Bounds<Pixels>, value: f32, window: &mut Window) {
     let middle = (top + bottom) * 0.5;
     let start = left + 2.0;
     let end = right - 2.0;
-    let handle = start + value.clamp(0.0, 1.0) * (end - start);
+    let fill_end = start + value.clamp(0.0, 1.0) * (end - start);
     rect(window, left, top, right, bottom, 0x151919ff);
     rect(window, start, middle - 3.0, end, middle + 3.0, 0x343939ff);
     rect(
         window,
         start,
         middle - 3.0,
-        handle,
+        fill_end,
         middle + 3.0,
         0xff6258ff,
-    );
-    rect(
-        window,
-        handle - 2.0,
-        middle - 8.0,
-        handle + 2.0,
-        middle + 8.0,
-        0xff8679ff,
     );
 }
 
@@ -1673,7 +2255,13 @@ fn palette_distance(
     (x - cx).hypot(y - cy)
 }
 
-fn paint_palette(bounds: Bounds<Pixels>, current: Scale, choices: &[Scale], window: &mut Window) {
+fn paint_palette(
+    bounds: Bounds<Pixels>,
+    current: Scale,
+    choices: &[Scale],
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
     let left = f32::from(bounds.left());
     let top = f32::from(bounds.top());
     let right = f32::from(bounds.right());
@@ -1747,6 +2335,15 @@ fn paint_palette(bounds: Bounds<Pixels>, current: Scale, choices: &[Scale], wind
         if selected {
             circle(window, x, y, 12.0, 0xff766bff);
             circle(window, x, y, 9.0, 0x111515ff);
+            canvas_label(
+                window,
+                cx,
+                "CURRENT SCALE".to_owned(),
+                x + 13.0,
+                y - 15.0,
+                7.0,
+                0xa9b4acff,
+            );
         }
         circle(window, x, y, if selected { 5.5 } else { 3.5 }, color);
     }
@@ -1797,11 +2394,31 @@ pub fn new_playing_note_screenshot_gui() -> toybox::gpui_gui::GpuiHostedGui {
 /// Construct a screenshot fixture with the maximum 48-note scale.
 #[cfg(feature = "screenshot-test")]
 pub fn new_dense_screenshot_gui() -> toybox::gpui_gui::GpuiHostedGui {
+    dense_screenshot_gui(false)
+}
+
+/// Construct the dense fixture scrolled to its last node.
+#[cfg(feature = "screenshot-test")]
+pub fn new_scrolled_screenshot_gui() -> toybox::gpui_gui::GpuiHostedGui {
+    dense_screenshot_gui(true)
+}
+
+#[cfg(feature = "screenshot-test")]
+fn dense_screenshot_gui(scrolled: bool) -> toybox::gpui_gui::GpuiHostedGui {
     let shared = Arc::new(Shared::default());
     shared.edit(|scale| scale.set_count(MAX_DEGREES));
     toybox::gpui_gui::GpuiHostedGui::new(
         "FreqsGpuiDenseScaleView",
-        move |_, cx| cx.new(|_| Editor::screenshot(Arc::clone(&shared))).into(),
+        move |_, cx| {
+            cx.new(|_| {
+                let editor = Editor::screenshot(Arc::clone(&shared));
+                if scrolled {
+                    editor.node_scroll.scroll_to_bottom();
+                }
+                editor
+            })
+            .into()
+        },
         WIDTH,
         HEIGHT,
     )

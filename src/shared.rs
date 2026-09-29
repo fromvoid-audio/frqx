@@ -68,8 +68,22 @@ impl Shared {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Read the tuning and its revision under the same lock.
+    pub fn snapshot_with_revision(&self) -> (Scale, u64) {
+        let state = self
+            .scale
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        (*state, self.revision.load(Ordering::Acquire))
+    }
+
     /// Change the tuning and notify the MTS worker if its value changed.
     pub fn edit(&self, edit: impl FnOnce(&mut Scale)) {
+        let _ = self.edit_with_revision(edit);
+    }
+
+    /// Apply an edit and return the resulting tuning with its locked revision.
+    pub fn edit_with_revision(&self, edit: impl FnOnce(&mut Scale)) -> (Scale, u64) {
         let mut state = self
             .scale
             .lock()
@@ -83,6 +97,34 @@ impl Shared {
             }
             self.revision.fetch_add(1, Ordering::Release);
         }
+        (*state, self.revision.load(Ordering::Acquire))
+    }
+
+    /// Apply an edit only if the tuning still has the revision observed by the caller.
+    /// The revision check and mutation share the scale lock, so host-state replacement
+    /// cannot race between a stale-row check and its edit.
+    pub fn edit_if_revision(
+        &self,
+        expected: u64,
+        edit: impl FnOnce(&mut Scale),
+    ) -> Option<(Scale, u64)> {
+        let mut state = self
+            .scale
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if self.revision.load(Ordering::Acquire) != expected {
+            return None;
+        }
+        let before = *state;
+        edit(&mut state);
+        if *state != before {
+            let frequencies = state.frequencies();
+            for (slot, frequency) in self.frequencies.iter().zip(frequencies) {
+                slot.store(frequency.to_bits(), Ordering::Release);
+            }
+            self.revision.fetch_add(1, Ordering::Release);
+        }
+        Some((*state, self.revision.load(Ordering::Acquire)))
     }
 
     /// Replace the tuning after validation, as when loading host state.
@@ -217,5 +259,33 @@ impl Shared {
     #[cfg(feature = "vst3")]
     pub(crate) fn set_clients(&self, clients: i32) {
         self.clients.store(clients, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_revision_edit_is_rejected_without_publishing_frequency() {
+        let shared = Shared::default();
+        let (_, stale_revision) = shared.snapshot_with_revision();
+        let stale_key_frequency = shared.frequency(61);
+
+        let mut restored = shared.snapshot();
+        restored.root_hz = 330.0;
+        assert!(shared.replace(restored));
+        let (restored_scale, restored_revision) = shared.snapshot_with_revision();
+        assert!(restored_revision > stale_revision);
+
+        let accepted = shared.edit_if_revision(stale_revision, |scale| {
+            scale.set_degree_frequency(1, 400.0);
+        });
+
+        assert!(accepted.is_none());
+        assert_eq!(shared.snapshot(), restored_scale);
+        assert_eq!(shared.revision(), restored_revision);
+        assert_eq!(shared.frequency(61), restored_scale.frequency(61));
+        assert_ne!(stale_key_frequency, shared.frequency(61));
     }
 }

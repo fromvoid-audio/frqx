@@ -133,6 +133,80 @@ impl Scale {
         }
     }
 
+    /// Insert a degree halfway between the selected degree and its successor.
+    ///
+    /// The root remains attached to the same pitch when an earlier degree is
+    /// inserted. The returned index identifies the new degree.
+    pub fn insert_degree_after(&mut self, index: usize) -> Option<usize> {
+        if self.count >= MAX_DEGREES || index >= self.count {
+            return None;
+        }
+        let insert_at = index + 1;
+        let next = if insert_at == self.count {
+            self.period_cents
+        } else {
+            self.cents[insert_at]
+        };
+        let gap = next - self.cents[index];
+        if gap < MIN_GAP_CENTS * 2.0 {
+            return None;
+        }
+        let cents = (self.cents[index] + next) * 0.5;
+        self.cents.copy_within(insert_at..self.count, insert_at + 1);
+        self.cents[insert_at] = cents;
+        self.count += 1;
+        if insert_at <= self.root_degree {
+            self.root_degree += 1;
+        }
+        Some(insert_at)
+    }
+
+    /// Remove one degree while retaining at least three notes per period.
+    ///
+    /// The root degree cannot be removed. Indices after the removed degree are
+    /// shifted down, preserving the root's pitch and MIDI assignment.
+    pub fn remove_degree(&mut self, index: usize) -> bool {
+        if self.count <= 3 || index >= self.count || index == self.root_degree {
+            return false;
+        }
+        self.cents.copy_within(index + 1..self.count, index);
+        self.count -= 1;
+        self.cents[self.count] = 0.0;
+        if index < self.root_degree {
+            self.root_degree -= 1;
+        }
+        true
+    }
+
+    /// Set a degree's absolute pitch in hertz, constrained by its neighbors.
+    /// Editing the root degree changes the reference frequency; other degrees
+    /// retain the reference and move within their existing ordered interval.
+    pub fn set_degree_frequency(&mut self, index: usize, hz: f64) -> bool {
+        if index >= self.count || !hz.is_finite() || hz <= 0.0 {
+            return false;
+        }
+        if index == self.root_degree {
+            if !(10.0..=20_000.0).contains(&hz) {
+                return false;
+            }
+            if (self.root_hz - hz).abs() < 0.000_1 {
+                return false;
+            }
+            self.root_hz = hz;
+            return true;
+        }
+        let cents = self.cents[self.root_degree] + (1200.0 * (hz / self.root_hz).log2()) as f32;
+        self.move_degree(index, cents)
+    }
+
+    /// Return the absolute pitch of one degree in hertz.
+    pub fn degree_frequency(&self, index: usize) -> Option<f64> {
+        (index < self.count).then(|| {
+            self.root_hz
+                * 2.0_f64.powf(f64::from(self.cents[index] - self.cents[self.root_degree]) / 1200.0)
+        })
+    }
+
     /// Stretch or compress the existing pattern to a new period size.
     pub fn set_period(&mut self, period_cents: f32) {
         if !period_cents.is_finite() || !(600.0..=2400.0).contains(&period_cents) {
@@ -369,6 +443,88 @@ mod tests {
         assert_eq!(scale.count, 7);
         assert_eq!(scale.cents[scale.root_degree], original_root);
         assert!(scale.valid());
+    }
+
+    #[test]
+    fn node_insert_and_remove_preserve_root_pitch_and_sorted_order() {
+        let mut scale = Scale {
+            root_degree: 4,
+            ..Scale::default()
+        };
+        let root_cents = scale.cents[scale.root_degree];
+        let root_hz = scale.frequency(scale.root_key);
+        let inserted = scale.insert_degree_after(1).expect("wide interval");
+        assert_eq!(inserted, 2);
+        assert_eq!(scale.count, 8);
+        assert_eq!(scale.root_degree, 5);
+        assert_eq!(scale.cents[scale.root_degree], root_cents);
+        assert_eq!(scale.frequency(scale.root_key), root_hz);
+        assert!(scale.valid());
+
+        assert!(scale.remove_degree(inserted));
+        assert_eq!(scale.count, 7);
+        assert_eq!(scale.root_degree, 4);
+        assert_eq!(scale.cents[scale.root_degree], root_cents);
+        assert_eq!(scale.frequency(scale.root_key), root_hz);
+        assert!(scale.valid());
+        assert!(!scale.remove_degree(scale.root_degree));
+    }
+
+    #[test]
+    fn adjacent_node_insertion_respects_minimum_gap_and_degree_limit() {
+        let mut scale = Scale::equal(48);
+        assert!(scale.insert_degree_after(0).is_none());
+        assert_eq!(scale.count, 48);
+
+        let mut scale = Scale::equal(3);
+        scale.cents[1] = 1.0;
+        scale.cents[2] = 3.0;
+        assert!(scale.insert_degree_after(0).is_none());
+        assert!(scale.valid());
+    }
+
+    #[test]
+    fn editing_node_hz_is_root_relative_and_updates_the_mts_frequency() {
+        let mut scale = Scale {
+            root_degree: 4,
+            root_hz: 330.0,
+            ..Scale::default()
+        };
+        assert!(scale.set_degree_frequency(5, 400.0));
+        let expected_cents =
+            scale.cents[scale.root_degree] + (1200.0 * (400.0_f64 / 330.0).log2()) as f32;
+        assert!((scale.cents[5] - expected_cents).abs() < 0.01);
+        assert!((scale.degree_frequency(5).unwrap() - 400.0).abs() < 0.01);
+        assert!((scale.frequency(61) - 400.0).abs() < 0.01);
+
+        assert!(scale.set_degree_frequency(4, 440.0));
+        assert_eq!(scale.root_hz, 440.0);
+        assert!(scale.valid());
+    }
+
+    #[test]
+    fn degree_hz_fields_allow_valid_frequencies_outside_root_range() {
+        let mut low_root = Scale {
+            root_hz: 10.0,
+            root_degree: 6,
+            period_cents: 2400.0,
+            ..Scale::default()
+        };
+        low_root.cents[..7].copy_from_slice(&[0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 2399.0]);
+        assert!((low_root.degree_frequency(0).unwrap() - 2.500_7).abs() < 0.01);
+        assert!(low_root.set_degree_frequency(0, 2.6));
+        assert!((low_root.degree_frequency(0).unwrap() - 2.6).abs() < 0.01);
+
+        let mut high_root = Scale {
+            root_hz: 20_000.0,
+            root_degree: 0,
+            period_cents: 2400.0,
+            ..Scale::default()
+        };
+        high_root.cents[..7].copy_from_slice(&[0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 2399.0]);
+        assert!(high_root.set_degree_frequency(6, 79_950.0));
+        assert!((high_root.degree_frequency(6).unwrap() - 79_950.0).abs() < 0.1);
+        assert!(high_root.valid());
     }
 
     #[test]
