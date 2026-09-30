@@ -22,3 +22,7 @@ Checks run before packaging; identities/profile can be overridden with
 
 Mac release packaging retains the upstream signed MTS-ESP installer and CHANGELOG.
 The preparation hook pins its download and verifies its SHA-256 and signature.
+
+The shared `commit` command commits the validated version bump and pushes it to
+the configured upstream. It never force-pushes; a failed push can be retried by
+rerunning `commit` without preparing another version.
