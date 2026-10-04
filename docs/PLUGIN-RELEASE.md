@@ -9,15 +9,23 @@ Its existing `scripts/release.sh` stays available.
 ./scripts/plugin-release dev
 ```
 
-Use `scripts/plugin-release.ps1` on Windows if the plugin supports that host.
+Freqs currently supports macOS only. The launcher rejects other hosts; native
+Apple Silicon and Intel Mac builds use the matching architecture.
+Dev builds include the current working-tree changes and are ad-hoc signed.
+The build label appears in the editor and VST3 factory metadata. The inspector
+checks the exact bundle identity, dev label, and VST3 entry points.
+
 The shared tool generates source/hash/build-number development names and handles
-manual patch preparation, strict version commits, Developer ID/notarized Mac
-packages and unsigned Windows VST3 folder packages. It never installs itself.
+manual patch preparation, strict version commits, and Developer ID/notarized Mac
+packages. It never installs itself.
 
 Freqs is donationware, so this config has no license gate. Gumroad publishing
-is intentionally unconfigured: add the correct `gumroad_product`, optional
-thumbnail entries before running `publish`.
-Checks run before packaging; identities/profile can be overridden with
+is connected to the existing FREQS product. After committing the intended source,
+run `prepare`, inspect the version bump, then `commit`, `deploy`, and `publish`.
+The `publish` command uploads the verified archive and adds its delivery-page
+file embed. Superseded delivery embeds, public listing copy, and screenshots are
+updated separately.
+Local checks run before dev builds and release packaging; identities/profile can be overridden with
 `APPLE_CODESIGN_IDENTITY` and `APPLE_NOTARY_KEYCHAIN_PROFILE`.
 
 Mac release packaging retains the upstream signed MTS-ESP installer and CHANGELOG.

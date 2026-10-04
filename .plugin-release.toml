@@ -9,7 +9,8 @@ slug = "freqs"
 archive_slug = "Freqs"
 bundle_id = "com.portalsurfer.freqs.vst3"
 features = ["vst3"]
-# Donationware needs no licensing hook. Add a Gumroad ID to enable publishing.
+gumroad_product = "UDsnz1eApMbEzWBvwU6I-Q=="
+# Donationware needs no licensing hook.
 
 [variants.instructions]
 macos-arm64 = "release/INSTALL-MACOS.txt"
@@ -20,17 +21,18 @@ macos-x64 = ["dist/release-extras/ODDSound-libMTS-1.03.pkg", "CHANGELOG.md"]
 
 [signing]
 identity = "Developer ID Application: Wanja Svasek (DKTKQ8U5T8)"
-profile = "capture-release"
+profile = "freqs-notary"
 identity_env = "APPLE_CODESIGN_IDENTITY"
 profile_env = "APPLE_NOTARY_KEYCHAIN_PROFILE"
 
 [[hooks.checks]]
 argv = ["bash", "scripts/ci.sh", "--vst3"]
 platforms = ["macos-arm64", "macos-x64"]
-[[hooks.checks]]
-argv = ["cargo", "test", "--locked", "--features", "vst3"]
-platforms = ["windows-x64"]
 
 [[hooks.before_package]]
 argv = ["bash", "scripts/prepare-release-extras.sh"]
+platforms = ["macos-arm64", "macos-x64"]
+
+[[hooks.inspect_binary]]
+argv = ["python3", "scripts/inspect-binary.py"]
 platforms = ["macos-arm64", "macos-x64"]

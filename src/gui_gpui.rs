@@ -36,6 +36,8 @@ struct Editor {
     palette_bounds: GraphBounds,
     node_inputs: Vec<(gpui::Entity<NumericInput>, gpui::Entity<NumericInput>)>,
     node_input_subscriptions: Vec<gpui::Subscription>,
+    count_input: Option<gpui::Entity<NumericInput>>,
+    count_subscriptions: Vec<gpui::Subscription>,
     node_scroll: gpui::ScrollHandle,
     node_input_revision: u64,
     node_input_epoch: u64,
@@ -70,6 +72,8 @@ impl Editor {
             palette_bounds: Rc::new(RefCell::new(None)),
             node_inputs: Vec::new(),
             node_input_subscriptions: Vec::new(),
+            count_input: None,
+            count_subscriptions: Vec::new(),
             node_scroll: gpui::ScrollHandle::new(),
             node_input_revision: initial_revision,
             node_input_epoch: 0,
@@ -124,24 +128,62 @@ impl Editor {
         cx.notify();
     }
 
-    fn count_12(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_note_count(12, cx);
+    fn ensure_count_input(&mut self, count: usize, cx: &mut Context<Self>) {
+        if self.count_input.is_none() {
+            let input = cx.new(|cx| {
+                NumericInput::new(
+                    NumericInputConfig::new(
+                        count as f32,
+                        NumericInputRange::new(3.0, MAX_DEGREES as f32),
+                        1.0,
+                        1.0,
+                        |value| format!("{value:.0}"),
+                    ),
+                    cx,
+                )
+            });
+            self.count_subscriptions.push(cx.subscribe(
+                &input,
+                |this, _, event: &NumericInputSubmitted, cx| {
+                    if let Ok(count) = event.text.trim().parse::<usize>() {
+                        this.set_note_count(count, cx);
+                    }
+                    this.sync_count_input(cx);
+                },
+            ));
+            self.count_subscriptions.push(
+                cx.subscribe(&input, |this, _, _: &NumericInputCanceled, cx| {
+                    this.sync_count_input(cx)
+                }),
+            );
+            self.count_subscriptions.push(cx.subscribe(
+                &input,
+                |this, _, event: &NumericInputStepped, cx| {
+                    let count = this.shared.snapshot().count as f32 + event.delta;
+                    this.set_note_count(count.clamp(3.0, MAX_DEGREES as f32) as usize, cx);
+                    this.sync_count_input(cx);
+                },
+            ));
+            self.count_input = Some(input);
+        }
+        if let Some(input) = &self.count_input {
+            input.update(cx, |input, cx| {
+                if !input.is_editing() && input.value() != count as f32 {
+                    input.set_value(count as f32, cx);
+                }
+            });
+        }
     }
 
-    fn count_7(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_note_count(7, cx);
-    }
-
-    fn count_24(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_note_count(24, cx);
-    }
-
-    fn count_36(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_note_count(36, cx);
-    }
-
-    fn count_48(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_note_count(48, cx);
+    fn sync_count_input(&self, cx: &mut Context<Self>) {
+        if let Some(input) = &self.count_input {
+            let count = self.shared.snapshot().count;
+            input.update(cx, |input, cx| {
+                input.set_value(count as f32, cx);
+                input.set_text(count.to_string(), cx);
+            });
+        }
+        cx.notify();
     }
 
     fn set_note_count(&mut self, count: usize, cx: &mut Context<Self>) {
@@ -150,8 +192,10 @@ impl Editor {
             .edit_with_revision(|scale| scale.set_count(count));
         self.node_input_revision = revision;
         self.node_context_menu = None;
+        self.selected_node = self.selected_node.min(scale.count - 1);
+        self.pair = (scale.root_degree, self.selected_node);
         self.variations = variations(scale, self.max_move);
-        cx.notify();
+        self.sync_count_input(cx);
     }
 
     fn open_node_context(
@@ -218,6 +262,10 @@ impl Editor {
             .node_context_menu
             .map(|(index, _, _)| index)
             .unwrap_or(self.selected_node);
+        self.remove_node(index, cx);
+    }
+
+    fn remove_node(&mut self, index: usize, cx: &mut Context<Self>) {
         let mut removed = false;
         let result = self
             .shared
@@ -605,7 +653,8 @@ impl Editor {
         let scale = self.shared.snapshot();
         let x = f32::from(event.position.x);
         let y = f32::from(event.position.y);
-        if let Some(bounds) = *self.pitch_bounds.borrow() {
+        let pitch_bounds = *self.pitch_bounds.borrow();
+        if let Some(bounds) = pitch_bounds {
             if contains(bounds, x, y) {
                 let index = (0..scale.count)
                     .min_by(|a, b| {
@@ -620,6 +669,23 @@ impl Editor {
                             )
                     })
                     .unwrap_or(0);
+                if event.click_count == 2 && (y - f32::from(bounds.top()) - 51.0).abs() <= 16.0 {
+                    self.dragging = None;
+                    self.node_context_menu = None;
+                    let distance =
+                        (x - pitch_x(bounds, scale.cents[index] / scale.period_cents * 1200.0))
+                            .abs();
+                    if distance <= 12.0 {
+                        self.remove_node(index, cx);
+                    } else {
+                        let cents = (x - pitch_x(bounds, 0.0))
+                            / (pitch_x(bounds, 1200.0) - pitch_x(bounds, 0.0))
+                            * scale.period_cents;
+                        self.insert_and_drag_node(cents);
+                    }
+                    cx.notify();
+                    return;
+                }
                 if (x - pitch_x(bounds, scale.cents[index] / scale.period_cents * 1200.0)).abs()
                     < 20.0
                 {
@@ -650,6 +716,30 @@ impl Editor {
         }
     }
 
+    fn insert_and_drag_node(&mut self, cents: f32) {
+        self.dragging = None;
+        let mut inserted = None;
+        if let Some((scale, revision)) = self
+            .shared
+            .edit_if_revision(self.node_input_revision, |scale| {
+                inserted = scale.insert_degree(cents)
+            })
+        {
+            self.node_input_revision = revision;
+            if let Some(index) = inserted {
+                self.selected_node = index;
+                self.pair = (scale.root_degree, index);
+                self.dragging = Some(index);
+                self.variations = variations(scale, self.max_move);
+                self.message = format!("Added node {}", index + 1);
+            } else {
+                self.message = "No room to add a node here".into();
+            }
+        } else {
+            self.message = "Scale changed; try again".into();
+        }
+    }
+
     fn graph_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.pressed_button != Some(MouseButton::Left) {
             return;
@@ -662,11 +752,19 @@ impl Editor {
             / (f32::from(bounds.size.width) - 90.0))
             .clamp(0.0, 1.0)
             * self.shared.snapshot().period_cents;
-        let (_, revision) = self.shared.edit_with_revision(|scale| {
-            scale.move_degree(index, cents);
+        self.retune_dragged_node(index, cents);
+        cx.notify();
+    }
+
+    fn retune_dragged_node(&mut self, index: usize, cents: f32) {
+        let mut changed = false;
+        let (scale, revision) = self.shared.edit_with_revision(|scale| {
+            changed = scale.move_degree(index, cents);
         });
         self.node_input_revision = revision;
-        cx.notify();
+        if changed {
+            self.variations = variations(scale, self.max_move);
+        }
     }
 
     fn graph_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -801,6 +899,7 @@ impl Render for Editor {
             }
         }
         self.ensure_node_inputs(scale, scale_revision, cx);
+        self.ensure_count_input(scale.count, cx);
         let held_degrees = played_degrees(scale, self.shared.held_keys());
         let recent_degree = self.recent_played.and_then(|(key, when)| {
             (when.elapsed() < Duration::from_millis(160)).then(|| degree_for_key(scale, key))
@@ -1103,7 +1202,9 @@ impl Render for Editor {
                 .gap(px(9.0))
                 .text_size(px(12.0))
                 .child("EDIT NODE PITCH IN HZ OR CENTS")
-                .child("RIGHT-CLICK A NODE TO ADD OR REMOVE IT")
+                .child("DOUBLE-CLICK THE PITCH LINE TO ADD A NOTE")
+                .child("DOUBLE-CLICK A NOTE TO REMOVE IT")
+                .child("RIGHT-CLICK A NODE FOR MORE ACTIONS")
                 .child("SCROLL THE NODE LIST TO SEE MORE NOTES")
                 .child("DRAG A NOTE ON THE PITCH LINE TO RETUNE")
                 .child("CHOOSE A PITCH-SPACE POINT TO APPLY A VARIATION")
@@ -1219,7 +1320,7 @@ impl Render for Editor {
                             .ml_auto()
                             .text_size(px(10.0))
                             .text_color(rgba(0x69736cff))
-                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                            .child(format!("v{}", crate::BUILD_VERSION)),
                     )
                     .child(
                         div()
@@ -1552,38 +1653,23 @@ impl Render for Editor {
                                             .on_click(cx.listener(Self::more)),
                                     )
                                     .child(
-                                        control_button("7", scale.count == 7)
-                                            .id("count-7")
-                                            .w(px(54.0))
-                                            .on_click(cx.listener(Self::count_7)),
-                                    )
-                                    .child(div().w(px(44.0)))
-                                    .child(
-                                        control_button("12", scale.count == 12)
-                                            .id("count-12")
-                                            .w(px(110.0))
-                                            .on_click(cx.listener(Self::count_12)),
-                                    )
-                                    .child(
-                                        control_button("24", scale.count == 24)
-                                            .id("count-24")
-                                            .ml(px(6.0))
-                                            .w(px(110.0))
-                                            .on_click(cx.listener(Self::count_24)),
-                                    )
-                                    .child(
-                                        control_button("36", scale.count == 36)
-                                            .id("count-36")
-                                            .ml(px(6.0))
-                                            .w(px(110.0))
-                                            .on_click(cx.listener(Self::count_36)),
-                                    )
-                                    .child(
-                                        control_button("48", scale.count == 48)
-                                            .id("count-48")
-                                            .ml(px(6.0))
-                                            .w(px(110.0))
-                                            .on_click(cx.listener(Self::count_48)),
+                                        div()
+                                            .id("note-count")
+                                            .w(px(100.0))
+                                            .h(px(38.0))
+                                            .px(px(8.0))
+                                            .flex()
+                                            .items_center()
+                                            .bg(rgba(0x101615ff))
+                                            .border_1()
+                                            .border_color(rgba(0x48534cff))
+                                            .rounded(px(5.0))
+                                            .child(
+                                                self.count_input
+                                                    .as_ref()
+                                                    .expect("count input initialized")
+                                                    .clone(),
+                                            ),
                                     ),
                             )
                             .child(div().mt(px(11.0)).h(px(1.0)).bg(rgba(0x252e2aff)))
@@ -2428,6 +2514,38 @@ fn dense_screenshot_gui(scrolled: bool) -> toybox::gpui_gui::GpuiHostedGui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newly_inserted_note_can_be_dragged_without_another_click() {
+        let shared = Arc::new(Shared::default());
+        let mut editor = Editor::new(Arc::clone(&shared));
+        editor.insert_and_drag_node(250.0);
+        let index = editor
+            .dragging
+            .expect("inserted note captures the held mouse");
+        assert_eq!(editor.selected_node, index);
+        assert_eq!(shared.snapshot().count, 8);
+        editor.retune_dragged_node(index, 300.0);
+        assert_eq!(shared.snapshot().cents[index], 300.0);
+        assert_eq!(editor.variations[0], shared.snapshot());
+        editor.insert_and_drag_node(300.0);
+        assert_eq!(editor.dragging, None);
+        assert_eq!(shared.snapshot().count, 8);
+    }
+
+    #[test]
+    fn dragging_a_note_refreshes_pitch_space_from_the_current_tuning() {
+        let shared = Arc::new(Shared::default());
+        let mut editor = Editor::new(Arc::clone(&shared));
+        let original_choices = editor.variations.clone();
+        editor.retune_dragged_node(2, 450.0);
+        let scale = shared.snapshot();
+        assert_eq!(scale.cents[2], 450.0);
+        assert_eq!(editor.variations[0], scale);
+        assert_ne!(editor.variations, original_choices);
+        assert_eq!(editor.node_input_revision, shared.revision());
+        assert!(editor.variations.iter().all(Scale::valid));
+    }
 
     #[test]
     fn keyboard_highlights_follow_root_and_wrap_in_24_note_scale() {

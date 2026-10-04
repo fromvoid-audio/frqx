@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4
+
+- Adopt the Frame interface with editable node pitches in hertz and cents.
+- Replace note-count presets with one editable counter, retaining +/− controls.
+- Double-click the pitch line to add a node, then keep holding the mouse to drag it immediately; double-click an existing node to remove it.
+- Recalculate Pitch Space variations as nodes are dragged, while retaining the root and the 3–48-note range.
+- Integrate the pinned macOS release pipeline with local checks, labeled dev builds, and packaged-binary inspection.
+
 ## 0.3.3
 
 - Present Freqs as an MTS-ESP tuning system throughout the plug-in and documentation; describe its built-in sound as a tuning audition aid.

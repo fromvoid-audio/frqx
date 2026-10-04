@@ -435,7 +435,7 @@ impl IPluginFactory2Trait for Factory {
         info.classFlags = 0;
         copy_cstring(subcategories, &mut info.subCategories);
         copy_cstring("PORTALSURFER", &mut info.vendor);
-        copy_cstring(env!("CARGO_PKG_VERSION"), &mut info.version);
+        copy_cstring(crate::BUILD_VERSION, &mut info.version);
         copy_cstring("VST 3", &mut info.sdkVersion);
         kResultOk
     }

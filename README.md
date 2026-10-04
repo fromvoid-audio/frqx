@@ -8,9 +8,9 @@ Freqs replaces an ODDSound master plug-in as the tuning controller. MTS-ESP stil
 
 - **Nodes** lists each degree's absolute pitch in hertz and its position in cents. Press Enter to apply a field edit; Escape or leaving the field cancels the draft. Up/Down adjusts the value, with Shift for smaller steps. Pitch remains relative to the selected root, and edits stay ordered between neighboring nodes. Scroll the list for larger scales. Right-click a node to insert a degree after it or remove it. The root node cannot be removed, and a scale always keeps at least three nodes.
 - **Pitch Space** shows scale variations positioned by whole-scale cohesion and root affinity. Click a point to apply a variation. The dice button creates another field from the current scale. The Reach bar updates the field while dragging.
-- **Pitch Line** lets you drag individual degrees silently. Note numbers appear above the line. Cent values appear below it for smaller scales and the selected degree in larger scales. Held MIDI notes highlight their scale degrees, with a brief mark after release.
+- **Pitch Line** lets you drag individual degrees silently; Pitch Space recalculates its variations as a note moves. Double-click empty space on the line to add a note at that pitch and keep holding the mouse to drag it immediately, or double-click an existing note to remove it. The root is retained and at least three notes are required. Note numbers appear above the line. Cent values appear below it for smaller scales and the selected degree in larger scales. Held MIDI notes highlight their scale degrees, with a brief mark after release.
 - **Reference** groups root degree, root frequency, root MIDI key, repeat size, and ratio snapping. Hold Shift while dragging the repeat bar, or enable Snap Ratios, to lock it to clean ratios. Equal divisions, Just major, and Snap selected note are under settings.
-- **Slots & structure** sets 3–48 notes with the count buttons and provides eight local save/load slots. Each adjacent MIDI key plays the next scale note, wrapping to the next period after the last note.
+- **Slots & structure** shows the current note count in a single editable field. Enter a whole number from 3–48 and press Enter to apply it; use +/− or Up/Down to adjust by one. It also provides eight local save/load slots. Each adjacent MIDI key plays the next scale note, wrapping to the next period after the last note.
 - **Audition** offers triangle, square, and saw tones, plus output level, attack, and release controls for checking the current tuning with MIDI.
 - **Save** and **Load** use eight local scale slots under `~/Library/Application Support/PORTALSURFER/Freqs/scales/`. The VST3 also stores its scale and synth settings in the host project state. Earlier scale files and host states remain readable.
 
@@ -37,6 +37,22 @@ bash scripts/dist.sh --format vst3
 ```
 
 `CARGO_TARGET_DIR` may point at a shared local build cache. The distribution script creates an ad-hoc signed local test bundle. It does not install, notarize, or publish it.
+
+## Local dev build and release pipeline
+
+Freqs currently supports macOS only. Use the pinned shared
+[plugin-release pipeline](docs/PLUGIN-RELEASE.md) for local development builds:
+
+```sh
+./scripts/plugin-release status
+./scripts/plugin-release dev
+```
+
+The dev command runs local checks, includes current working-tree changes, builds
+for the native Mac architecture, and creates an ad-hoc signed VST3 under `dist/`.
+Its version/source/build-number label appears in the editor and VST3 metadata.
+The packaged binary is checked for bundle identity, build label, and VST3 entry
+points. It does not install or publish the plug-in.
 
 ## Release package
 

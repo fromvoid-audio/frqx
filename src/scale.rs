@@ -161,6 +161,31 @@ impl Scale {
         Some(insert_at)
     }
 
+    /// Insert a degree at a pitch within the repeat, preserving the root pitch.
+    /// Reject endpoints, overlapping notes, and scales at the degree limit.
+    pub fn insert_degree(&mut self, cents: f32) -> Option<usize> {
+        if self.count >= MAX_DEGREES
+            || !cents.is_finite()
+            || cents <= 0.0
+            || cents > self.period_cents - MIN_GAP_CENTS
+        {
+            return None;
+        }
+        let index = self.cents[..self.count].partition_point(|pitch| *pitch < cents);
+        if (index > 0 && cents - self.cents[index - 1] < MIN_GAP_CENTS)
+            || (index < self.count && self.cents[index] - cents < MIN_GAP_CENTS)
+        {
+            return None;
+        }
+        self.cents.copy_within(index..self.count, index + 1);
+        self.cents[index] = cents;
+        self.count += 1;
+        if index <= self.root_degree {
+            self.root_degree += 1;
+        }
+        Some(index)
+    }
+
     /// Remove one degree while retaining at least three notes per period.
     ///
     /// The root degree cannot be removed. Indices after the removed degree are
@@ -481,6 +506,29 @@ mod tests {
         scale.cents[2] = 3.0;
         assert!(scale.insert_degree_after(0).is_none());
         assert!(scale.valid());
+    }
+
+    #[test]
+    fn clicked_pitch_insertion_preserves_root_and_rejects_overlap() {
+        let mut scale = Scale {
+            root_degree: 4,
+            ..Scale::default()
+        };
+        let root = scale.cents[scale.root_degree];
+        assert_eq!(scale.insert_degree(250.0), Some(2));
+        assert_eq!(scale.cents[2], 250.0);
+        assert_eq!(scale.cents[scale.root_degree], root);
+        assert!(scale.valid());
+        for cents in [250.0, 250.5, -1.0, 1200.0, f32::NAN] {
+            assert_eq!(scale.insert_degree(cents), None);
+        }
+        assert!(scale.remove_degree(2));
+        assert_eq!(scale.count, 7);
+        assert_eq!(scale.cents[scale.root_degree], root);
+        assert_eq!(scale.insert_degree(1150.0), Some(7));
+        assert!(scale.valid());
+        assert_eq!(Scale::equal(48).insert_degree(12.0), None);
+        assert!(!Scale::equal(3).remove_degree(1));
     }
 
     #[test]

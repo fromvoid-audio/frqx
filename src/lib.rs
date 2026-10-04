@@ -4,6 +4,12 @@
 
 #![deny(missing_docs, warnings)]
 
+/// Version displayed by the UI and VST3 factory, including local dev build labels.
+pub const BUILD_VERSION: &str = match option_env!("PLUGIN_DEV_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod analysis;
 #[cfg(all(
     target_os = "macos",
