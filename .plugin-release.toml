@@ -22,6 +22,7 @@ macos-x64 = ["dist/release-extras/ODDSound-libMTS-1.03.pkg", "CHANGELOG.md"]
 [signing]
 identity = "Developer ID Application: Wanja Svasek (DKTKQ8U5T8)"
 profile = "freqs-notary"
+team_id = "DKTKQ8U5T8"
 identity_env = "APPLE_CODESIGN_IDENTITY"
 profile_env = "APPLE_NOTARY_KEYCHAIN_PROFILE"
 
