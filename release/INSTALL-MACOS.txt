@@ -1,11 +1,11 @@
-Freqs is an MTS-ESP tuning master. You do not need the ODDSound Master plug-in.
+frqx is an MTS-ESP tuning master. You do not need the ODDSound Master plug-in.
 
 1. If the MTS-ESP shared library is not already installed, run the included
    ODDSound-libMTS-1.03.pkg. It is ODDSound's signed installer; macOS will ask for
    an administrator password.
-2. Copy Freqs.vst3 into ~/Library/Audio/Plug-Ins/VST3/ and rescan in your DAW.
-3. Disable any other MTS-ESP master, load Freqs and an MTS-ESP-compatible client
+2. Copy frqx.vst3 into ~/Library/Audio/Plug-Ins/VST3/ and rescan in your DAW.
+3. Disable any other MTS-ESP master, load frqx and an MTS-ESP-compatible client
    instrument, then check the client count and audition the tuning.
 
-To uninstall the plugin, remove Freqs.vst3 from that folder. Keep the shared
+To uninstall the plugin, remove frqx.vst3 from that folder. Keep the shared
 MTS-ESP library if other devices use it.

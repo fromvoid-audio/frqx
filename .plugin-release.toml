@@ -1,12 +1,12 @@
 schema = 1
-name = "Freqs"
-package = "freqs"
-library = "freqs"
+name = "frqx"
+package = "frqx"
+library = "frqx"
 
 [[variants]]
-name = "Freqs"
-slug = "freqs"
-archive_slug = "Freqs"
+name = "frqx"
+slug = "frqx"
+archive_slug = "frqx"
 bundle_id = "com.portalsurfer.freqs.vst3"
 features = ["vst3"]
 gumroad_product = "UDsnz1eApMbEzWBvwU6I-Q=="

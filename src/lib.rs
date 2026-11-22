@@ -1,4 +1,4 @@
-//! Freqs AudioDev plug-in.
+//! frqx AudioDev plug-in.
 //!
 //! An MTS-ESP tuning system for designing and auditioning microtonal scales.
 

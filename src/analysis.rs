@@ -1,4 +1,4 @@
-//! Harmonic relationship estimates used by the Freqs editor.
+//! Harmonic relationship estimates used by the frqx editor.
 
 use std::sync::OnceLock;
 

@@ -4,8 +4,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
-slug="freqs"
-display_name="freqs"
+slug="frqx"
+display_name="frqx"
 output_dir="${AUDIODEV_DIST_DIR:-${repo_root}/dist}"
 format="vst3"
 run_checks=true
@@ -92,7 +92,7 @@ package_bundle() {
 <plist version="1.0"><dict>
 <key>CFBundleDisplayName</key><string>${display_name}</string>
 <key>CFBundleExecutable</key><string>${slug}</string>
-<key>CFBundleIdentifier</key><string>com.portalsurfer.${slug}.${kind}</string>
+<key>CFBundleIdentifier</key><string>com.portalsurfer.freqs.${kind}</string>
 <key>CFBundleName</key><string>${display_name}</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
 <key>CFBundleShortVersionString</key><string>${version}</string>

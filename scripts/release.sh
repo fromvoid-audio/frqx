@@ -86,16 +86,16 @@ if [[ "${mode}" == check ]]; then
   exit 0
 fi
 
-build_id="freqs-v${version}-${source_sha:0:12}"
+build_id="frqx-v${version}-${source_sha:0:12}"
 release_dir="${repo_root}/dist/releases/${build_id}"
 [[ ! -e "${release_dir}" ]] || { echo "release already exists: ${release_dir}" >&2; exit 1; }
 mkdir -p "${repo_root}/target" "${repo_root}/dist/releases"
-tmp_root="$(mktemp -d "${repo_root}/target/freqs-release.XXXXXX")"
+tmp_root="$(mktemp -d "${repo_root}/target/frqx-release.XXXXXX")"
 trap 'rm -rf -- "${tmp_root}"' EXIT
 
 libmts_pkg="${tmp_root}/ODDSound-libMTS-1.03.pkg"
 # MTS-ESP clients load this shared library from a fixed system path. Ship the
-# upstream signed installer alongside Freqs so one download contains both.
+# upstream signed installer alongside frqx so one download contains both.
 curl --fail --location --silent --show-error \
   "https://raw.githubusercontent.com/ODDSound/MTS-ESP/f214739b8832e7f297cb9970d0c0efbf783f1462/libMTS/Mac/x86_64_ARM/libMTSMac_v1.03.pkg" \
   --output "${libmts_pkg}"
@@ -109,7 +109,7 @@ pkg_signature="$(pkgutil --check-signature "${libmts_pkg}")"
 bash scripts/ci.sh --vst3
 VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${tmp_root}/cargo-target" \
   cargo rustc --release --features vst3 --lib -- -C link-arg=-Wl,-bundle
-binary="${tmp_root}/cargo-target/release/libfreqs.dylib"
+binary="${tmp_root}/cargo-target/release/libfrqx.dylib"
 [[ -f "${binary}" && "$(lipo -archs "${binary}")" == arm64 ]] || {
   echo "release requires an arm64 VST3 binary" >&2
   exit 1
@@ -125,18 +125,18 @@ done
   exit 1
 }
 
-bundle="${tmp_root}/freqs.vst3"
+bundle="${tmp_root}/frqx.vst3"
 mkdir -p "${bundle}/Contents/MacOS"
-cp "${binary}" "${bundle}/Contents/MacOS/freqs"
-chmod 755 "${bundle}/Contents/MacOS/freqs"
+cp "${binary}" "${bundle}/Contents/MacOS/frqx"
+chmod 755 "${bundle}/Contents/MacOS/frqx"
 cat > "${bundle}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleDisplayName</key><string>Freqs</string>
-<key>CFBundleExecutable</key><string>freqs</string>
+<key>CFBundleDisplayName</key><string>frqx</string>
+<key>CFBundleExecutable</key><string>frqx</string>
 <key>CFBundleIdentifier</key><string>com.portalsurfer.freqs.vst3</string>
-<key>CFBundleName</key><string>Freqs</string>
+<key>CFBundleName</key><string>frqx</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
 <key>CFBundleShortVersionString</key><string>${version}</string>
 <key>CFBundleVersion</key><string>${version}</string>
@@ -179,11 +179,11 @@ codesign -vvvv -R=notarized --check-notarization "${bundle}" >/dev/null
 staged="${tmp_root}/${build_id}"
 mkdir -p "${staged}"
 cp "${libmts_pkg}" "${staged}/ODDSound-libMTS-1.03.pkg"
-archive="${staged}/freqs-v${version}-macos.vst3.zip"
+archive="${staged}/frqx-v${version}-macos.vst3.zip"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${bundle}" "${archive}"
 /usr/bin/ditto -x -k "${archive}" "${tmp_root}/audit"
-audited="${tmp_root}/audit/freqs.vst3"
-[[ -x "${audited}/Contents/MacOS/freqs" ]] || { echo "release ZIP is missing its VST3 binary" >&2; exit 1; }
+audited="${tmp_root}/audit/frqx.vst3"
+[[ -x "${audited}/Contents/MacOS/frqx" ]] || { echo "release ZIP is missing its VST3 binary" >&2; exit 1; }
 [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "${audited}/Contents/Info.plist")" == com.portalsurfer.freqs.vst3 ]] || {
   echo "release ZIP bundle identifier changed" >&2
   exit 1
@@ -193,25 +193,25 @@ xcrun stapler validate "${audited}"
 codesign -vvvv -R=notarized --check-notarization "${audited}" >/dev/null
 cp CHANGELOG.md "${staged}/CHANGELOG.md"
 cat > "${staged}/INSTALL.txt" <<'EOF'
-Freqs is an Apple Silicon macOS MTS-ESP tuning master. You do not need the ODDSound Master plug-in.
+frqx is an Apple Silicon macOS MTS-ESP tuning master. You do not need the ODDSound Master plug-in.
 
 1. If the MTS-ESP system library is not already installed, run the included
    ODDSound-libMTS-1.03.pkg. macOS will ask for an administrator password.
    This is ODDSound's signed installer for the shared library used by MTS-ESP
    masters and clients. Do not remove an existing master plug-in until you have
-   checked that your client instruments connect to Freqs.
-2. Install the Freqs VST3 bundle in ~/Library/Audio/Plug-Ins/VST3/ and rescan
+   checked that your client instruments connect to frqx.
+2. Install the frqx VST3 bundle in ~/Library/Audio/Plug-Ins/VST3/ and rescan
    plug-ins in your DAW.
-3. Disable any other MTS-ESP master, load Freqs and a compatible client
-   instrument, then check Freqs' client count and audition the tuning.
+3. Disable any other MTS-ESP master, load frqx and a compatible client
+   instrument, then check the client count and audition the tuning.
 EOF
 python3 - "${staged}" "${version}" "${source_sha}" "${team_id}" "${notary_id}" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 version, source_sha, team_id, notary_id = sys.argv[2:]
-archive = root / f"freqs-v{version}-macos.vst3.zip"
+archive = root / f"frqx-v{version}-macos.vst3.zip"
 manifest = {
-    "product": "freqs", "version": version, "source_sha": source_sha,
+    "product": "frqx", "version": version, "source_sha": source_sha,
     "platform": "macos", "architecture": "arm64", "format": "vst3",
     "signing": "Developer ID Application", "team_id": team_id,
     "notarized": True, "stapled": True, "notary_id": notary_id,
@@ -221,18 +221,18 @@ manifest = {
 }
 (root / "release-info.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
-complete_archive="${staged}/freqs-v${version}-macos-complete.zip"
+complete_archive="${staged}/frqx-v${version}-macos-complete.zip"
 mkdir -p "${tmp_root}/complete"
-cp -R "${bundle}" "${tmp_root}/complete/freqs.vst3"
+cp -R "${bundle}" "${tmp_root}/complete/frqx.vst3"
 cp "${libmts_pkg}" "${staged}/INSTALL.txt" "${staged}/CHANGELOG.md" "${tmp_root}/complete/"
 /usr/bin/ditto -c -k --sequesterRsrc "${tmp_root}/complete" "${complete_archive}"
 /usr/bin/ditto -x -k "${complete_archive}" "${tmp_root}/complete-audit"
-[[ -f "${tmp_root}/complete-audit/ODDSound-libMTS-1.03.pkg" && -d "${tmp_root}/complete-audit/freqs.vst3" ]] || {
-  echo "complete ZIP is missing Freqs or the MTS-ESP library installer" >&2
+[[ -f "${tmp_root}/complete-audit/ODDSound-libMTS-1.03.pkg" && -d "${tmp_root}/complete-audit/frqx.vst3" ]] || {
+  echo "complete ZIP is missing frqx or the MTS-ESP library installer" >&2
   exit 1
 }
-codesign --verify --deep --strict "${tmp_root}/complete-audit/freqs.vst3"
-xcrun stapler validate "${tmp_root}/complete-audit/freqs.vst3"
+codesign --verify --deep --strict "${tmp_root}/complete-audit/frqx.vst3"
+xcrun stapler validate "${tmp_root}/complete-audit/frqx.vst3"
 echo "5caff5a1f194cddfe5a065cd1b2335fae76ea9d8ff21021071f75b4e7ef0fb85  ${tmp_root}/complete-audit/ODDSound-libMTS-1.03.pkg" | shasum -a 256 -c - >/dev/null
 python3 - "${staged}/release-info.json" "${complete_archive}" <<'PY'
 import hashlib, json, pathlib, sys

@@ -7,7 +7,7 @@ fn main() {
     use cocoa::appkit::{NSApp, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
     use cocoa::base::{id, nil};
     use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize};
-    use freqs::gui_gpui::{
+    use frqx::gui_gpui::{
         new_dense_screenshot_gui, new_playing_note_screenshot_gui, new_screenshot_gui,
         new_scrolled_screenshot_gui, HEIGHT, WIDTH,
     };
@@ -39,7 +39,7 @@ fn main() {
         let output = std::env::var_os("TOYBOX_UI_SCREENSHOT_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("target/ui-screenshots"))
-            .join("freqs");
+            .join("frqx");
         std::fs::create_dir_all(&output).expect("screenshot directory");
         {
             let mut gui = new_screenshot_gui();

@@ -136,7 +136,7 @@ impl MtsApi {
         unsafe {
             (self.set_tunings)(frequencies.as_ptr());
             if let Some(set_name) = self.set_name {
-                set_name(c"freqs".as_ptr());
+                set_name(c"frqx".as_ptr());
             }
             if let Some(set_period) = self.set_period {
                 set_period(2.0_f64.powf(f64::from(scale.period_cents) / 1200.0));

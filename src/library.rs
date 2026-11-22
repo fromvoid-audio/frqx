@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::scale::{Scale, MAX_DEGREES};
 
-/// Number of named locations in the local Freqs scale library.
+/// Number of named locations in the local frqx scale library.
 pub const SLOT_COUNT: usize = 8;
 
 fn directory() -> Result<PathBuf, String> {
@@ -69,7 +69,7 @@ fn parse(contents: &str) -> Result<Scale, String> {
     let stored_capacity = match lines.next() {
         Some("FREQS 1") => 16,
         Some("FREQS 2") => MAX_DEGREES,
-        _ => return Err("Unsupported Freqs scale file".into()),
+        _ => return Err("Unsupported frqx scale file".into()),
     };
     fn next<T: std::str::FromStr>(lines: &mut std::str::Lines<'_>) -> Result<T, String> {
         lines

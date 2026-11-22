@@ -2,7 +2,7 @@
 # Copy this launcher into a plugin's scripts/ directory. Pin release/toolkit-revision.
 set -euo pipefail
 if [[ "$(uname -s)" != Darwin ]]; then
-  echo "Freqs currently supports macOS only" >&2
+  echo "frqx currently supports macOS only" >&2
   exit 1
 fi
 plugin_root="$(cd "$(dirname "$0")/.." && pwd)"

@@ -1305,7 +1305,7 @@ impl Render for Editor {
                             .text_size(px(34.0))
                             .font_family(".SystemUIFont")
                             .text_color(rgba(0xff695fff))
-                            .child("freqs"),
+                            .child("frqx"),
                     )
                     .child(
                         div()

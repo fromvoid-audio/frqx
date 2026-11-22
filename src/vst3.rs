@@ -367,13 +367,13 @@ impl IPluginFactoryTrait for Factory {
         // SAFETY: the pointer is validated above.
         let info = unsafe { &mut *info };
         if index == 0 {
-            write_class_info_many(info, Processor::CID, CATEGORY_AUDIO_MODULE_CLASS, "freqs");
+            write_class_info_many(info, Processor::CID, CATEGORY_AUDIO_MODULE_CLASS, "frqx");
         } else {
             write_class_info_many(
                 info,
                 controller::Controller::CID,
                 CATEGORY_COMPONENT_CONTROLLER_CLASS,
-                "freqs Controller",
+                "frqx Controller",
             );
         }
         kResultOk
@@ -417,13 +417,13 @@ impl IPluginFactory2Trait for Factory {
                 Processor::CID,
                 CATEGORY_AUDIO_MODULE_CLASS,
                 "Instrument",
-                "freqs",
+                "frqx",
             ),
             1 => (
                 controller::Controller::CID,
                 CATEGORY_COMPONENT_CONTROLLER_CLASS,
                 "Instrument",
-                "freqs Controller",
+                "frqx Controller",
             ),
             _ => return kInvalidArgument,
         };
@@ -444,6 +444,37 @@ impl IPluginFactory2Trait for Factory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vst3_factory_reports_frqx_with_existing_class_ids() {
+        let factory = Factory;
+        let classes = [
+            ("frqx", uid(0x2CFB7EF2, 0x652346FB, 0xA76DA2AD, 0x2DD6CAB6)),
+            (
+                "frqx Controller",
+                uid(0x3D36BA2B, 0xB2264D09, 0x8F6E3C99, 0x9BBF279E),
+            ),
+        ];
+        for (index, (name, id)) in (0..).zip(classes) {
+            let mut basic = unsafe { std::mem::zeroed::<PClassInfo>() };
+            let mut extended = unsafe { std::mem::zeroed::<PClassInfo2>() };
+            let mut expected_name = [0; 64];
+            copy_cstring(name, &mut expected_name);
+
+            assert_eq!(
+                unsafe { factory.getClassInfo(index, &mut basic) },
+                kResultOk
+            );
+            assert_eq!(
+                unsafe { factory.getClassInfo2(index, &mut extended) },
+                kResultOk
+            );
+            assert_eq!(basic.cid, id);
+            assert_eq!(extended.cid, id);
+            assert_eq!(basic.name, expected_name);
+            assert_eq!(extended.name, expected_name);
+        }
+    }
 
     #[test]
     fn vst3_reports_an_instrument_with_midi_input_and_stereo_output() {

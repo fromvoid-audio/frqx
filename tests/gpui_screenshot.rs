@@ -6,12 +6,12 @@ fn screenshot_renders_initial_ui() {
     if !cfg!(feature = "screenshot-test") || std::env::var_os("TOYBOX_UI_SCREENSHOT").is_none() {
         return;
     }
-    let runner = std::env::var_os("CARGO_BIN_EXE_freqs_gpui_screenshot")
+    let runner = std::env::var_os("CARGO_BIN_EXE_frqx_gpui_screenshot")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             let executable = std::env::current_exe().ok()?;
             let target_dir = executable.parent()?.parent()?;
-            let direct = target_dir.join("freqs_gpui_screenshot");
+            let direct = target_dir.join("frqx_gpui_screenshot");
             direct.is_file().then_some(direct)
         })
         .expect("Cargo should build the screenshot runner");

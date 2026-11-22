@@ -1,5 +1,5 @@
 [package]
-name = "freqs"
+name = "frqx"
 version = "0.3.4"
 edition = "2021"
 publish = false
@@ -16,7 +16,7 @@ vst3 = ["toybox/gpui-vst3", "gpui-gui"]
 screenshot-test = ["dep:image", "gpui-gui"]
 
 [dependencies]
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "c3cdf63d4d687bf639e3ec6050c388f777bc189b", default-features = false }
+toybox = { git = "https://github.com/fromvoid-audio/toybox.git", rev = "c3cdf63d4d687bf639e3ec6050c388f777bc189b", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -25,8 +25,8 @@ objc = "0.2"
 raw-window-handle = "0.5.2"
 
 [[bin]]
-name = "freqs_gpui_screenshot"
-path = "examples/freqs_gpui_screenshot.rs"
+name = "frqx_gpui_screenshot"
+path = "examples/frqx_gpui_screenshot.rs"
 required-features = ["screenshot-test"]
 test = false
 bench = false
